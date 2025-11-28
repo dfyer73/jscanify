@@ -30,7 +30,8 @@ app.innerHTML = `
       <div id="claimEditor" class="claim-editor" style="display:none"></div>
       <div id="action-controls">
         <button id="exportPdf" class="control-button">Export to PDF</button>
-        <button id="sendEmail" class="control-button">Send Email</button>
+        <button id="exportCsv" class="control-button">Export CSV</button>
+        <button id="sendEmail" class="control-button" style="display:none">Send Email</button>
       </div>
     </div>
   </div>
@@ -69,35 +70,48 @@ app.innerHTML = `
       </div>
       <div class="llm-field">
         <label>SMTP Host</label>
-        <input type="text" id="settingsSmtpHost" />
+        <input type="text" id="settingsSmtpHost" style="display:none" />
       </div>
       <div class="llm-field">
         <label>SMTP Port</label>
-        <input type="number" id="settingsSmtpPort" min="1" />
+        <input type="number" id="settingsSmtpPort" min="1" style="display:none" />
       </div>
       <div class="llm-field">
         <label>SMTP Username</label>
-        <input type="text" id="settingsSmtpUser" />
+        <input type="text" id="settingsSmtpUser" style="display:none" />
       </div>
       <div class="llm-field">
         <label>SMTP Password</label>
-        <input type="password" id="settingsSmtpPass" />
+        <input type="password" id="settingsSmtpPass" style="display:none" />
       </div>
       <div class="llm-field">
         <label>From Email</label>
-        <input type="email" id="settingsSmtpFrom" />
+        <input type="email" id="settingsSmtpFrom" style="display:none" />
       </div>
       <div class="llm-field">
         <label>To Email</label>
-        <input type="email" id="settingsSmtpTo" />
+        <input type="email" id="settingsSmtpTo" style="display:none" />
       </div>
       <div class="llm-field">
         <label>Email Subject</label>
-        <input type="text" id="settingsSmtpSubject" />
+        <input type="text" id="settingsSmtpSubject" style="display:none" />
+      </div>
+      <div class="llm-field">
+        <label>SMTP Secure Token (smtpjs)</label>
+        <input type="text" id="settingsSmtpToken" placeholder="Optional: use smtpjs SecureToken" style="display:none" />
+      </div>
+      <div class="llm-field">
+        <label>Email API Endpoint (preferred)</label>
+        <input type="text" id="settingsEmailApiEndpoint" placeholder="https://your-service/send" style="display:none" />
+      </div>
+      <div class="llm-field">
+        <label>Email API Key (Bearer)</label>
+        <input type="text" id="settingsEmailApiKey" placeholder="Optional API key/token" style="display:none" />
       </div>
     </div>
     <div class="actions">
       <button id="saveSettings" class="primary">Save</button>
+      <button id="testSmtp">Test SMTP</button>
       <button id="cancelSettings">Cancel</button>
     </div>
   </div>
@@ -117,7 +131,16 @@ function loadOpenCV(onComplete){
 const scanner = new window.jscanify()
 function loadJsPDF(onComplete){ if (window.jspdf && window.jspdf.jsPDF) { onComplete() } else { const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'; s.onload=onComplete; document.body.appendChild(s) } }
 function loadTesseract(onComplete){ if (window.Tesseract) { onComplete() } else { const s=document.createElement('script'); s.src='https://unpkg.com/tesseract.js@v4/dist/tesseract.min.js'; s.onload=onComplete; document.body.appendChild(s) } }
-function loadSMTPJS(onComplete){ if (window.Email && window.Email.send) { onComplete() } else { const s=document.createElement('script'); s.src='https://smtpjs.com/v3/smtp.js'; s.onload=onComplete; document.body.appendChild(s) } }
+function loadSMTPJS(onComplete){
+  if (window.Email && window.Email.send) { onComplete() }
+  else {
+    const s=document.createElement('script')
+    s.src='https://smtpjs.com/v3/smtp.js'
+    s.onload=onComplete
+    s.onerror=function(){ showAlert('Failed to load SMTP library'); onComplete() }
+    document.body.appendChild(s)
+  }
+}
 function loadPDFJS(onComplete){
   if (window.pdfjsLib && window.pdfjsLib.getDocument) { onComplete() } else {
     const s=document.createElement('script');
@@ -304,9 +327,38 @@ $(function(){
     })
   })
 
+  $('#exportCsv').on('click', function(){
+    const claims = loadClaims()
+    if (!claims.length) { alert('No items to export'); return }
+    const omit = new Set(['_id','datetime_added','merchant_address','page_count','tyoe_claim','source_id','image_data','pdf_pages'])
+    const union = new Set()
+    claims.forEach(function(c){ Object.keys(c).forEach(function(k){ if (!omit.has(k)) union.add(k) }) })
+    const preferred = ['merchant_name','transaction_date','transaction_time','total_amount','local_amount','currency','type_claim','purpose']
+    const keys = preferred.filter(function(k){ return union.has(k) || k === 'type_claim' }).concat(Array.from(union).filter(function(k){ return preferred.indexOf(k) === -1 }))
+    const rows = []
+    rows.push(keys.join(','))
+    claims.forEach(function(c){
+      rows.push(keys.map(function(k){
+        let v = c[k]
+        if (k === 'type_claim' && (v == null || v === '')) { v = c.tyoe_claim }
+        const s = v == null ? '' : String(v).replace(/"/g,'""')
+        return '"' + s + '"'
+      }).join(','))
+    })
+    const csvStr = rows.join('\n')
+    const blob = new Blob([csvStr], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'jscanify.csv'
+    document.body.appendChild(a)
+    a.click()
+    setTimeout(function(){ URL.revokeObjectURL(url); a.remove() }, 500)
+  })
+
   $('#sendEmail').on('click', async function(){
     const smtp = getSMTPConfig()
-    if (!smtp.host || !smtp.port || !smtp.user || !smtp.pass || !smtp.from || !smtp.to) { showAlert('Set SMTP settings first'); return }
+    if (!(smtp.apiEndpoint) && (!smtp.token) && (!smtp.host || !smtp.port || !smtp.user || !smtp.pass || !smtp.from || !smtp.to)) { showAlert('Set Email API or SMTP settings first'); return }
     const claims = loadClaims().filter(function(c){ return !!c.image_data || (c.pdf_pages && c.pdf_pages.length) })
     if (!claims.length) { alert('No items to send'); return }
     showProcessing(); logProcessing('Preparing attachments')
@@ -344,18 +396,44 @@ $(function(){
       claims.forEach(function(c){ csvRows.push(keys.map(function(k){ const v = c[k]; const s = v == null ? '' : String(v).replace(/"/g,'""'); return '"' + s + '"' }).join(',')) })
       const csvStr = csvRows.join('\n')
       const csvDataUri = 'data:text/csv;base64,' + btoa(unescape(encodeURIComponent(csvStr)))
-      loadSMTPJS(async function(){
-        logProcessing('Sending email')
+      async function sendViaApi(){
         try {
-          await window.Email.send({ Host: smtp.host, Port: smtp.port, Username: smtp.user, Password: smtp.pass, To: smtp.to, From: smtp.from, Subject: smtp.subject || 'Receipts', Body: 'Attached PDF and CSV exported from Melvin Scanner.', Attachments: [ { name: 'claims.pdf', data: pdfDataUri }, { name: 'claims.csv', data: csvDataUri } ] })
-          logProcessing('Email sent')
-          hideProcessing()
-          showAlert('Email sent successfully')
-        } catch (e) {
-          logProcessing('Email error: ' + (e && e.message ? e.message : String(e)))
-          hideProcessing()
-          showAlert('Email send failed')
+          const controller = new AbortController()
+          const timeout = setTimeout(function(){ controller.abort() }, 25000)
+          const body = { to: smtp.to, from: smtp.from, subject: smtp.subject || 'Receipts', text: 'Attached PDF and CSV exported from Melvin Scanner.', attachments: [ { filename: 'claims.pdf', content: pdfDataUri }, { filename: 'claims.csv', content: csvDataUri } ] }
+          const headers = { 'Content-Type': 'application/json' }
+          if (smtp.apiKey) headers['Authorization'] = 'Bearer ' + smtp.apiKey
+          const res = await fetch(smtp.apiEndpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal })
+          clearTimeout(timeout)
+          if (!res.ok) { logProcessing('Email API failed: ' + res.status); showAlert('Email API failed: ' + res.status); return false }
+          logProcessing('Email sent via API'); showAlert('Email sent successfully'); return true
+        } catch (e) { logProcessing('Email API error: ' + (e && e.message ? e.message : String(e))); showAlert('Email send failed or timed out'); return false }
+      }
+      if (smtp.apiEndpoint) {
+        logProcessing('Sending via Email API')
+        await sendViaApi(); hideProcessing(); return
+      }
+      loadSMTPJS(async function(){
+        logProcessing('Sending via SMTP')
+        async function sendEmailWithTimeout(timeoutMs){
+          return new Promise(function(resolve){
+            let finished = false
+            function finish(ok){ if (!finished) { finished = true; resolve(ok) } }
+            const t = setTimeout(function(){ finish(false) }, timeoutMs || 20000)
+            try {
+              const payload = smtp.token ? { SecureToken: smtp.token, To: smtp.to, From: smtp.from, Subject: smtp.subject || 'Receipts', Body: 'Attached PDF and CSV exported from Melvin Scanner.', Attachments: [ { name: 'claims.pdf', data: pdfDataUri }, { name: 'claims.csv', data: csvDataUri } ] } : { Host: smtp.host, Port: smtp.port, Username: smtp.user, Password: smtp.pass, To: smtp.to, From: smtp.from, Subject: smtp.subject || 'Receipts', Body: 'Attached PDF and CSV exported from Melvin Scanner.', Attachments: [ { name: 'claims.pdf', data: pdfDataUri }, { name: 'claims.csv', data: csvDataUri } ] }
+              window.Email.send(payload)
+                .then(function(){ clearTimeout(t); finish(true) })
+                .catch(function(){ clearTimeout(t); finish(false) })
+            } catch { clearTimeout(t); finish(false) }
+          })
         }
+        const approxSizeMb = ((pdfDataUri.length + csvDataUri.length) * 3) / (4 * 1024 * 1024)
+        if (approxSizeMb > 8) { logProcessing('Warning: large attachments ~' + approxSizeMb.toFixed(2) + 'MB'); showAlert('Attachments are large; sending may fail or time out') }
+        const ok = await sendEmailWithTimeout(25000)
+        if (ok) { logProcessing('Email sent'); showAlert('Email sent successfully') }
+        else { logProcessing('Email timeout or failed'); showAlert('Email send failed or timed out') }
+        hideProcessing()
       })
     })
   })
@@ -719,6 +797,9 @@ $('#openSettings').on('click', function(){
   $('#settingsSmtpFrom').val(smtp.from || '')
   $('#settingsSmtpTo').val(smtp.to || '')
   $('#settingsSmtpSubject').val(smtp.subject || 'Receipts')
+  $('#settingsSmtpToken').val(smtp.token || '')
+  $('#settingsEmailApiEndpoint').val(smtp.apiEndpoint || '')
+  $('#settingsEmailApiKey').val(smtp.apiKey || '')
   $('#settingsPanel').show()
 })
 $('#closeSettings, #cancelSettings').on('click', function(){ $('#settingsPanel').hide() })
@@ -739,10 +820,70 @@ $('#saveSettings').on('click', function(){
     pass: $('#settingsSmtpPass').val(),
     from: $('#settingsSmtpFrom').val(),
     to: $('#settingsSmtpTo').val(),
-    subject: $('#settingsSmtpSubject').val()
+    subject: $('#settingsSmtpSubject').val(),
+    token: $('#settingsSmtpToken').val(),
+    apiEndpoint: $('#settingsEmailApiEndpoint').val(),
+    apiKey: $('#settingsEmailApiKey').val()
   }
   saveSMTPConfig(smtp)
   $('#settingsPanel').hide()
+})
+
+$(document).on('click', '#testSmtp', async function(){
+  const btn = document.getElementById('testSmtp')
+  if (btn) { btn.disabled = true; btn.textContent = 'Testing…' }
+  const smtp = {
+    host: $('#settingsSmtpHost').val(),
+    port: $('#settingsSmtpPort').val(),
+    user: $('#settingsSmtpUser').val(),
+    pass: $('#settingsSmtpPass').val(),
+    from: $('#settingsSmtpFrom').val(),
+    to: $('#settingsSmtpTo').val(),
+    subject: $('#settingsSmtpSubject').val(),
+    token: $('#settingsSmtpToken').val(),
+    apiEndpoint: $('#settingsEmailApiEndpoint').val(),
+    apiKey: $('#settingsEmailApiKey').val()
+  }
+  if (!(smtp.apiEndpoint) && (!smtp.token) && (!smtp.host || !smtp.port || !smtp.user || !smtp.pass || !smtp.from || !smtp.to)) { showAlert('Fill Email API or SMTP settings'); if (btn) { btn.disabled = false; btn.textContent = 'Test SMTP' } return }
+  showProcessing(); logProcessing('Testing SMTP settings')
+  let loaded = false
+  const loadTimeout = setTimeout(function(){ if (!loaded) { showAlert('SMTP library load timed out'); hideProcessing(); if (btn) { btn.disabled = false; btn.textContent = 'Test SMTP' } } }, 8000)
+  if (smtp.apiEndpoint) {
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(function(){ controller.abort() }, 15000)
+      const headers = { 'Content-Type': 'application/json' }
+      if (smtp.apiKey) headers['Authorization'] = 'Bearer ' + smtp.apiKey
+      const res = await fetch(smtp.apiEndpoint, { method: 'POST', headers, body: JSON.stringify({ to: smtp.to, from: smtp.from, subject: (smtp.subject || 'SMTP Test') + ' (Test)', text: 'This is a test email from Melvin Scanner.' }), signal: controller.signal })
+      clearTimeout(timeout)
+      hideProcessing()
+      if (btn) { btn.disabled = false; btn.textContent = 'Test SMTP' }
+      if (res.ok) { showAlert('Email API test succeeded') } else { showAlert('Email API test failed: ' + res.status) }
+    } catch (e) {
+      hideProcessing(); if (btn) { btn.disabled = false; btn.textContent = 'Test SMTP' }
+      showAlert('Email API test error or timed out')
+    }
+    return
+  }
+  loadSMTPJS(async function(){
+    loaded = true; clearTimeout(loadTimeout)
+    function sendEmailWithTimeout(payload, timeoutMs){
+      return new Promise(function(resolve){
+        let finished = false
+        function finish(ok){ if (!finished) { finished = true; resolve(ok) } }
+        const t = setTimeout(function(){ finish(false) }, timeoutMs || 15000)
+        try {
+          window.Email.send(payload).then(function(){ clearTimeout(t); finish(true) }).catch(function(){ clearTimeout(t); finish(false) })
+        } catch { clearTimeout(t); finish(false) }
+      })
+    }
+    const payload = smtp.token ? { SecureToken: smtp.token, To: smtp.to, From: smtp.from, Subject: (smtp.subject || 'SMTP Test') + ' (Test)', Body: 'This is a test email from Melvin Scanner.' } : { Host: smtp.host, Port: smtp.port, Username: smtp.user, Password: smtp.pass, To: smtp.to, From: smtp.from, Subject: (smtp.subject || 'SMTP Test') + ' (Test)', Body: 'This is a test email from Melvin Scanner.' }
+    const ok = await sendEmailWithTimeout(payload, 20000)
+    if (ok) { logProcessing('SMTP test succeeded'); showAlert('SMTP test succeeded'); }
+    else { logProcessing('SMTP test failed or timed out'); showAlert('SMTP test failed or timed out'); }
+    hideProcessing()
+    if (btn) { btn.disabled = false; btn.textContent = 'Test SMTP' }
+  })
 })
 async function processPdfFile(file){
   logProcessing('Loading PDF: ' + (file.name || 'blob'))
