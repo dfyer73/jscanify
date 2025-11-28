@@ -29,7 +29,6 @@ app.innerHTML = `
       <div id="claimEditor" class="claim-editor" style="display:none"></div>
       <div id="action-controls">
         <button id="exportPdf" class="control-button">Export to PDF</button>
-        <button id="processOcr" class="control-button">Process OCR + Extract JSON</button>
       </div>
     </div>
   </div>
