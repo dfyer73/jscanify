@@ -102,6 +102,104 @@ body {
   max-width: 100%;
 }
 
+#start-controls {
+  margin: 10px 0 20px 0;
+}
+
+.control-button {
+  padding: 11px 16px;
+  border-radius: 8px;
+  background: #1e85ff;
+  color: white;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  margin-right: 10px;
+  display: inline-block;
+}
+
+#camera video {
+  max-width: 100%;
+  border-radius: 5px;
+}
+
+#results {
+  border: 3px solid #ededed;
+  border-radius: 5px;
+  background-color: #f7f7f7;
+  padding: 20px;
+  box-sizing: border-box;
+  min-height: 200px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+#results canvas {
+  max-width: 100%;
+}
+
+#llm-config {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 12px 0 20px 0;
+}
+
+.llm-field {
+  display: flex;
+  flex-direction: column;
+}
+
+.llm-field input {
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  min-width: 280px;
+}
+
+#structured {
+  border: 3px solid #ededed;
+  border-radius: 5px;
+  background-color: #f7f7f7;
+  padding: 20px;
+  box-sizing: border-box;
+  min-height: 80px;
+}
+
+#structured table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+#structured th, #structured td {
+  border: 1px solid #ddd;
+  padding: 8px;
+}
+
+#editableTableContainer table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+#editableTableContainer th, #editableTableContainer td {
+  border: 1px solid #ddd;
+  padding: 8px;
+}
+
+#editableTableContainer .actions button {
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  background: white;
+  cursor: pointer;
+}
+
+#editableTableContainer .footer {
+  margin-top: 10px;
+  font-weight: 600;
+}
+
 code {
   background-color: #f1f1f1 !important;
   border-radius: 5px;

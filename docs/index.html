@@ -66,22 +66,44 @@
     <br /><br />
     <hr />
     <div id="demo-title">
-      <h1 style="margin-bottom: 0">Demo</h1>
-      <p style="margin-top: 0">Select an image below to scan</p>
+      <h1 style="margin-bottom: 0">Start</h1>
+      <p style="margin-top: 0">Upload multiple images or use your camera</p>
     </div>
-    <div id="demo">
-      <div id="demo-images">
-        <div class="image-container">
-          <img src="images/test/test-sized.png" data-url="images/test/test.png" alt="jscanify test image 1" />
+    <div id="start">
+      <div id="start-controls">
+        <label class="control-button">
+          Select Images
+          <input type="file" id="fileInput" accept="image/*" multiple style="display:none" />
+        </label>
+        <button id="startCamera" class="control-button">Use Camera</button>
+        <button id="capture" class="control-button" disabled>Capture Photo</button>
+        <button id="stopCamera" class="control-button" disabled>Stop Camera</button>
+        <button id="exportPdf" class="control-button">Export to PDF</button>
+        <button id="processOcr" class="control-button">Process OCR + Extract JSON</button>
+      </div>
+      <div id="llm-config">
+        <div class="llm-field">
+          <label>LLM Endpoint</label>
+          <input type="text" id="llmEndpoint" value="https://api.openai.com/v1/chat/completions" />
         </div>
-        <div class="image-container" style="margin-bottom: 0">
-          <img src="images/test/test2-sized.png" data-url="images/test/test2.png" alt="jscanify test image 2" />
+        <div class="llm-field">
+          <label>Model</label>
+          <input type="text" id="llmModel" value="gpt-4o-mini" />
+        </div>
+        <div class="llm-field">
+          <label>API Key</label>
+          <input type="password" id="llmApiKey" placeholder="Enter API key" />
         </div>
       </div>
-      <div id="arrow"></div>
-      <div id="demo-result">
-        Scan results will appear here
+      <div id="camera" style="display:none">
+        <video id="video" autoplay playsinline></video>
       </div>
+      <h2>Results</h2>
+      <div id="results">Select or capture images to see border detection results</div>
+      <h2>Extracted Data</h2>
+      <div id="structured"></div>
+      <h2>Editable Scan Results</h2>
+      <div id="editableTableContainer"></div>
     </div>
     <br /><br />
     <hr />
@@ -104,6 +126,8 @@ image.onload = function () {
   </div>
   <script src="https://cdn.jsdelivr.net/gh/ColonelParrot/jscanify@latest/src/jscanify.min.js"></script>
   <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js" integrity="sha512-HTIcFBBapE168sZ88ePJPonY2zHqQ2ZsYVgQXzOnyoa3OkUuG2xA5v5WpfVq9X5J5Li2Dk3p0gF0LJkYTSQ7tw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script src="https://unpkg.com/tesseract.js@v4/dist/tesseract.min.js"></script>
   <script src="script.js"></script>
 
 
