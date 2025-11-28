@@ -5,9 +5,9 @@ app.innerHTML = `
   <div id="hero" style="position: relative; text-align: center;">
     <h2>Melvin Scanner</h2>
     <div id="start-controls" style="margin-top: 12px; display: inline-flex; gap: 12px;">
-      <label class="icon-button" title="Upload Images">
+      <label class="icon-button" title="Upload Images/PDFs">
         <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v10" stroke="#111" stroke-width="2"/><path d="M8 7l4-4 4 4" stroke="#111" stroke-width="2"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" stroke="#111" stroke-width="2"/></svg>
-        <input type="file" id="fileInput" accept="image/*" multiple style="display:none" />
+        <input type="file" id="fileInput" accept="image/*,application/pdf" multiple style="display:none" />
       </label>
       <button id="startCamera" class="icon-button" title="Use Camera">
         <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="7" width="18" height="12" rx="3" stroke="#111" stroke-width="2"/><path d="M9 7l1.5-2h3L15 7" stroke="#111" stroke-width="2"/><circle cx="12" cy="13" r="3" stroke="#111" stroke-width="2"/></svg>
@@ -30,6 +30,7 @@ app.innerHTML = `
       <div id="claimEditor" class="claim-editor" style="display:none"></div>
       <div id="action-controls">
         <button id="exportPdf" class="control-button">Export to PDF</button>
+        <button id="sendEmail" class="control-button">Send Email</button>
       </div>
     </div>
   </div>
@@ -66,6 +67,34 @@ app.innerHTML = `
         <label>Camera Height (px)</label>
         <input type="number" id="settingsCamHeight" min="480" step="120" />
       </div>
+      <div class="llm-field">
+        <label>SMTP Host</label>
+        <input type="text" id="settingsSmtpHost" />
+      </div>
+      <div class="llm-field">
+        <label>SMTP Port</label>
+        <input type="number" id="settingsSmtpPort" min="1" />
+      </div>
+      <div class="llm-field">
+        <label>SMTP Username</label>
+        <input type="text" id="settingsSmtpUser" />
+      </div>
+      <div class="llm-field">
+        <label>SMTP Password</label>
+        <input type="password" id="settingsSmtpPass" />
+      </div>
+      <div class="llm-field">
+        <label>From Email</label>
+        <input type="email" id="settingsSmtpFrom" />
+      </div>
+      <div class="llm-field">
+        <label>To Email</label>
+        <input type="email" id="settingsSmtpTo" />
+      </div>
+      <div class="llm-field">
+        <label>Email Subject</label>
+        <input type="text" id="settingsSmtpSubject" />
+      </div>
     </div>
     <div class="actions">
       <button id="saveSettings" class="primary">Save</button>
@@ -88,6 +117,18 @@ function loadOpenCV(onComplete){
 const scanner = new window.jscanify()
 function loadJsPDF(onComplete){ if (window.jspdf && window.jspdf.jsPDF) { onComplete() } else { const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'; s.onload=onComplete; document.body.appendChild(s) } }
 function loadTesseract(onComplete){ if (window.Tesseract) { onComplete() } else { const s=document.createElement('script'); s.src='https://unpkg.com/tesseract.js@v4/dist/tesseract.min.js'; s.onload=onComplete; document.body.appendChild(s) } }
+function loadSMTPJS(onComplete){ if (window.Email && window.Email.send) { onComplete() } else { const s=document.createElement('script'); s.src='https://smtpjs.com/v3/smtp.js'; s.onload=onComplete; document.body.appendChild(s) } }
+function loadPDFJS(onComplete){
+  if (window.pdfjsLib && window.pdfjsLib.getDocument) { onComplete() } else {
+    const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js'
+    s.onload=function(){
+      try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js' } catch {}
+      onComplete()
+    }
+    document.body.appendChild(s)
+  }
+}
 
 function generateId(){
   if (window.crypto && window.crypto.randomUUID) { return 'claim-' + window.crypto.randomUUID() }
@@ -129,9 +170,11 @@ function computeTargetSizeAndCorners(source){
 }
 
 let mediaStream
-const scanColumns = ['merchant_name','merchant_address','transaction_date','transaction_time','total_amount','currency','local_amount','tyoe_claim','purpose']
+const scanColumns = ['merchant_name','merchant_address','transaction_date','transaction_time','total_amount','currency','local_amount','type_claim','purpose']
+const CLAIM_TYPES = ['Broadband','Car Maintenance','Car Rental','Computer','Company Admin','Domain','Entertainment','Gift','Leave Passage','Medical','Mobile Plan','Outsourcing','Parking','Software','Stationery','Subscription','Transport','Travel (Hotel)','Travel (Air ticket)','Web Services']
 const STORAGE_KEY = 'jscanify_claims'
 const LLM_KEY = 'jscanify_llm_config'
+const SMTP_KEY = 'jscanify_smtp_config'
 
 function logProcessing(msg){
   try {
@@ -153,33 +196,45 @@ function showAlert(msg){
   } catch {}
 }
 
+function getSMTPConfig(){
+  try { return JSON.parse(localStorage.getItem(SMTP_KEY) || '{}') } catch { return {} }
+}
+function saveSMTPConfig(cfg){ localStorage.setItem(SMTP_KEY, JSON.stringify(cfg)) }
+
 $(function(){
   function showProcessing(){ $('#processingOverlay').show(); $('#processingLogs').empty(); $('#processingStatus').text('Processing...') }
   function hideProcessing(){ $('#processingOverlay').hide() }
   $('#fileInput').on('change', function(e){
     const files = Array.from(e.target.files || [])
     if (!files.length) return
-    showProcessing(); logProcessing('Reading ' + files.length + ' image(s)')
-    loadOpenCV(function(){
-      let pending = files.length
-      files.forEach(function(file){
-        const img = document.createElement('img')
-        img.src = URL.createObjectURL(file)
-        img.onload = function(){
-          logProcessing('Loaded image: ' + (file.name || 'blob'))
-          const target = computeTargetSizeAndCorners(img)
-          logProcessing(target ? 'Detected document edges' : 'No document detected')
-          const extractedCanvas = target ? scanner.extractPaper(img, target.resultWidth, target.resultHeight, target.cornerPoints) : null
-          if (extractedCanvas) {
-            logProcessing('Extracted document')
-            const id = appendResultCanvas(extractedCanvas)
-            maybeOcrAndAddRow(extractedCanvas, id).finally(function(){ pending--; if (pending === 0) hideProcessing() })
-          } else {
-            pending--; if (pending === 0) hideProcessing()
+    const pdfs = files.filter(function(f){ return /\.pdf$/i.test(f.name) || (f.type||'').toLowerCase() === 'application/pdf' })
+    const images = files.filter(function(f){ return !pdfs.includes(f) })
+    showProcessing(); logProcessing('Reading ' + files.length + ' file(s)')
+    let pending = pdfs.length + images.length
+    if (images.length) {
+      loadOpenCV(function(){
+        images.forEach(function(file){
+          const img = document.createElement('img')
+          img.src = URL.createObjectURL(file)
+          img.onload = function(){
+            logProcessing('Loaded image: ' + (file.name || 'blob'))
+            const target = computeTargetSizeAndCorners(img)
+            logProcessing(target ? 'Detected document edges' : 'No document detected')
+            const extractedCanvas = target ? scanner.extractPaper(img, target.resultWidth, target.resultHeight, target.cornerPoints) : null
+            if (extractedCanvas) {
+              logProcessing('Extracted document')
+              const id = appendResultCanvas(extractedCanvas)
+              maybeOcrAndAddRow(extractedCanvas, id).finally(function(){ pending--; if (pending === 0) hideProcessing() })
+            } else { pending--; if (pending === 0) hideProcessing() }
           }
-        }
+        })
       })
-    })
+    }
+    if (pdfs.length) {
+      loadPDFJS(function(){
+        pdfs.forEach(function(file){ processPdfFile(file).finally(function(){ pending--; if (pending === 0) hideProcessing() }) })
+      })
+    }
   })
 
   $('#startCamera').on('click', async function(){
@@ -217,7 +272,7 @@ $(function(){
   })
 
   $('#exportPdf').on('click', function(){
-    const claims = loadClaims().filter(function(c){ return !!c.image_data })
+    const claims = loadClaims().filter(function(c){ return !!c.image_data || (c.pdf_pages && c.pdf_pages.length) })
     if (!claims.length) { alert('No items to export'); return }
     loadJsPDF(async function(){
       const { jsPDF } = window.jspdf
@@ -228,17 +283,80 @@ $(function(){
       const maxItemW = (pageW - margin*2) * 0.45
       const maxItemH = (pageH - margin*2) * 0.45
       let x = margin, y = margin, rowH = 0
-      const images = await Promise.all(claims.map(function(c){ return new Promise(function(res){ const img = new Image(); img.onload=function(){ res({ img, url: c.image_data }) }; img.src = c.image_data }) }))
-      images.forEach(function(entry, idx){
-        let w = entry.img.naturalWidth, h = entry.img.naturalHeight
-        const scale = Math.min(maxItemW / w, maxItemH / h, 1)
-        w *= scale; h *= scale
-        if (x + w > pageW - margin) { x = margin; y += rowH + padding; rowH = 0 }
-        if (y + h > pageH - margin) { doc.addPage('a4', 'portrait'); x = margin; y = margin; rowH = 0 }
-        doc.addImage(entry.url, 'PNG', x, y, w, h)
-        x += w + padding; rowH = Math.max(rowH, h)
-      })
+      async function addImage(url){
+        return new Promise(function(res){ const img = new Image(); img.onload=function(){
+          let w = img.naturalWidth, h = img.naturalHeight
+          const scale = Math.min(maxItemW / w, maxItemH / h, 1)
+          w *= scale; h *= scale
+          if (x + w > pageW - margin) { x = margin; y += rowH + padding; rowH = 0 }
+          if (y + h > pageH - margin) { doc.addPage('a4', 'portrait'); x = margin; y = margin; rowH = 0 }
+          const fmt = url.startsWith('data:image/jpeg') ? 'JPEG' : 'PNG'
+          doc.addImage(url, fmt, x, y, w, h)
+          x += w + padding; rowH = Math.max(rowH, h)
+          res()
+        }; img.src = url })
+      }
+      for (const c of claims) {
+        const urls = c.pdf_pages && c.pdf_pages.length ? c.pdf_pages : [c.image_data]
+        for (const u of urls) { await addImage(u) }
+      }
       doc.save('jscanify.pdf')
+    })
+  })
+
+  $('#sendEmail').on('click', async function(){
+    const smtp = getSMTPConfig()
+    if (!smtp.host || !smtp.port || !smtp.user || !smtp.pass || !smtp.from || !smtp.to) { showAlert('Set SMTP settings first'); return }
+    const claims = loadClaims().filter(function(c){ return !!c.image_data || (c.pdf_pages && c.pdf_pages.length) })
+    if (!claims.length) { alert('No items to send'); return }
+    showProcessing(); logProcessing('Preparing attachments')
+    loadJsPDF(async function(){
+      const { jsPDF } = window.jspdf
+      const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' })
+      const pageSize = doc.internal.pageSize
+      const pageW = pageSize.getWidth(), pageH = pageSize.getHeight()
+      const margin = 24, padding = 10
+      const maxItemW = (pageW - margin*2) * 0.45
+      const maxItemH = (pageH - margin*2) * 0.45
+      let x = margin, y = margin, rowH = 0
+      async function addImage(url){
+        return new Promise(function(res){ const img = new Image(); img.onload=function(){
+          let w = img.naturalWidth, h = img.naturalHeight
+          const scale = Math.min(maxItemW / w, maxItemH / h, 1)
+          w *= scale; h *= scale
+          if (x + w > pageW - margin) { x = margin; y += rowH + padding; rowH = 0 }
+          if (y + h > pageH - margin) { doc.addPage('a4', 'portrait'); x = margin; y = margin; rowH = 0 }
+          const fmt = url.startsWith('data:image/jpeg') ? 'JPEG' : 'PNG'
+          doc.addImage(url, fmt, x, y, w, h)
+          x += w + padding; rowH = Math.max(rowH, h)
+          res()
+        }; img.src = url })
+      }
+      for (const c of claims) {
+        const urls = c.pdf_pages && c.pdf_pages.length ? c.pdf_pages : [c.image_data]
+        for (const u of urls) { await addImage(u) }
+      }
+      const pdfDataUri = doc.output('datauristring')
+      logProcessing('Preparing CSV')
+      const keys = Array.from(claims.reduce(function(set, c){ Object.keys(c).forEach(function(k){ if (k !== 'image_data' && k !== 'pdf_pages') set.add(k) }); return set }, new Set()))
+      const csvRows = []
+      csvRows.push(keys.join(','))
+      claims.forEach(function(c){ csvRows.push(keys.map(function(k){ const v = c[k]; const s = v == null ? '' : String(v).replace(/"/g,'""'); return '"' + s + '"' }).join(',')) })
+      const csvStr = csvRows.join('\n')
+      const csvDataUri = 'data:text/csv;base64,' + btoa(unescape(encodeURIComponent(csvStr)))
+      loadSMTPJS(async function(){
+        logProcessing('Sending email')
+        try {
+          await window.Email.send({ Host: smtp.host, Port: smtp.port, Username: smtp.user, Password: smtp.pass, To: smtp.to, From: smtp.from, Subject: smtp.subject || 'Receipts', Body: 'Attached PDF and CSV exported from Melvin Scanner.', Attachments: [ { name: 'claims.pdf', data: pdfDataUri }, { name: 'claims.csv', data: csvDataUri } ] })
+          logProcessing('Email sent')
+          hideProcessing()
+          showAlert('Email sent successfully')
+        } catch (e) {
+          logProcessing('Email error: ' + (e && e.message ? e.message : String(e)))
+          hideProcessing()
+          showAlert('Email send failed')
+        }
+      })
     })
   })
 
@@ -259,7 +377,7 @@ $(function(){
           const text = ocr.data.text
           logProcessing('Calling LLM to extract fields')
           const json = await callLLM(endpoint, model, apiKey, text)
-          if (json) { const row = addScanRow(json, item.dataset.id, dataUrl); newRows.push(row) } else { const row = addScanRow({}, item.dataset.id, dataUrl); row.status = 'unsuccessful'; newRows.push(row) }
+          if (json) { const normalized = normalizeParsedFields(json); const row = addScanRow(normalized, item.dataset.id, dataUrl); newRows.push(row) } else { const row = addScanRow({}, item.dataset.id, dataUrl); row.status = 'unsuccessful'; newRows.push(row) }
         }
         logProcessing('Saving to Local Storage')
         try { upsertClaimsToStorage(newRows) } catch (e) { logProcessing('Storage error: ' + (e && e.message ? e.message : String(e))) }
@@ -276,7 +394,7 @@ $(function(){
 })
 
 async function callLLM(endpoint, model, apiKey, text){
-  const prompt = 'Extract receipt fields as strict JSON with keys: merchant_name, merchant_address, transaction_date, transaction_time, total_amount, currency, local_amount, tyoe_claim, purpose. If missing, use null.'
+  const prompt = 'Extract receipt fields as strict JSON with keys: merchant_name, merchant_address, transaction_date, transaction_time, total_amount, currency, local_amount, type_claim, purpose.\nFormatting: transaction_date as dd/mm/yyyy; transaction_time as hh:mm:ss (24h); total_amount as number with 2 decimals; currency as string. If missing, use null. Output only JSON.'
   const body = { model, messages: [ { role: 'system', content: 'You are a parser that outputs only JSON.' }, { role: 'user', content: prompt + '\n\nReceipt OCR:\n' + text } ], response_format: { type: 'json_object' } }
   try {
     const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey }, body: JSON.stringify(body) })
@@ -286,6 +404,58 @@ async function callLLM(endpoint, model, apiKey, text){
     if (!content) return null
     return JSON.parse(content)
   } catch (e) { showAlert('LLM error: ' + (e && e.message ? e.message : String(e))); return null }
+}
+
+function normalizeParsedFields(obj){
+  const out = Object.assign({}, obj || {})
+  function pad2(n){ return String(n).padStart(2, '0') }
+  const d = out.transaction_date
+  if (typeof d === 'string') {
+    const m = d.match(/^([0-3]?\d)[\/-]([0-1]?\d)[\/-](\d{4})$/)
+    if (m) { out.transaction_date = pad2(m[1]) + '/' + pad2(m[2]) + '/' + m[3] }
+    else {
+      const t = Date.parse(d)
+      if (!isNaN(t)) { const dt = new Date(t); out.transaction_date = pad2(dt.getDate()) + '/' + pad2(dt.getMonth()+1) + '/' + dt.getFullYear() }
+    }
+  }
+  const tm = out.transaction_time
+  if (typeof tm === 'string') {
+    const mm = tm.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i)
+    if (mm) {
+      let hh = parseInt(mm[1],10)
+      const min = pad2(mm[2])
+      const sec = pad2(mm[3] || '00')
+      const ap = mm[4]
+      if (ap) {
+        const isPM = ap.toUpperCase() === 'PM'
+        if (isPM && hh < 12) hh += 12
+        if (!isPM && hh === 12) hh = 0
+      }
+      out.transaction_time = pad2(hh) + ':' + min + ':' + sec
+    }
+  }
+  const amt = out.total_amount
+  if (amt != null && amt !== '') {
+    const v = parseFloat(amt)
+    if (!isNaN(v)) out.total_amount = v.toFixed(2)
+  }
+  const lam = out.local_amount
+  if (lam != null && lam !== '') {
+    const lv = parseFloat(lam)
+    if (!isNaN(lv)) out.local_amount = lv.toFixed(2)
+  }
+  if (out.total_amount != null && out.total_amount !== '' && (out.local_amount == null || out.local_amount === '')) {
+    out.local_amount = out.total_amount
+  }
+  let cur = out.currency
+  if (cur == null || String(cur).trim() === '' || String(cur).toUpperCase() === 'RM' || String(cur).toUpperCase() === 'UNKNOWN') {
+    out.currency = 'MYR'
+  } else {
+    out.currency = String(cur).toUpperCase()
+  }
+  if (out.tyoe_claim && !out.type_claim) { out.type_claim = out.tyoe_claim; delete out.tyoe_claim }
+  if (out.type_claim && !CLAIM_TYPES.includes(out.type_claim)) { out.type_claim = out.type_claim }
+  return out
 }
 
 function maybeOcrAndAddRow(canvas, id){
@@ -309,7 +479,7 @@ function maybeOcrAndAddRow(canvas, id){
         logProcessing('Calling LLM to extract fields')
         const json = await callLLM(endpoint, model, apiKey, text)
         let row
-        if (json) { row = addScanRow(json, id, dataUrl) } else { row = addScanRow({}, id, dataUrl); row.status = 'unsuccessful'; showAlert('LLM parsing failed. Check model and endpoint settings.') }
+        if (json) { const normalized = normalizeParsedFields(json); row = addScanRow(normalized, id, dataUrl) } else { row = addScanRow({}, id, dataUrl); row.status = 'unsuccessful'; showAlert('LLM parsing failed. Check model and endpoint settings.') }
         logProcessing('Saving to Local Storage')
         try { upsertClaimsToStorage([row]) } catch (e) { logProcessing('Storage error: ' + (e && e.message ? e.message : String(e))) }
         logProcessing('New claim id: ' + row._id)
@@ -372,6 +542,7 @@ function loadClaims(){
     const fixed = arr.map(function(c){
       if (!c._id) { c._id = 'claim-' + (c.datetime_added ? Date.parse(c.datetime_added) : Date.now()) + '-' + Math.random().toString(36).slice(2,8); mutated = true }
       if (!c.datetime_added) { c.datetime_added = new Date().toISOString(); mutated = true }
+      if (c.tyoe_claim && !c.type_claim) { c.type_claim = c.tyoe_claim; delete c.tyoe_claim; mutated = true }
       return c
     })
     if (mutated) saveClaims(fixed)
@@ -397,7 +568,8 @@ function upsertClaimsToStorage(rows){
 function renderClaimsList(){
   const claims = loadClaims()
   const count = document.getElementById('claimsCount')
-  if (count) { count.innerHTML = 'Items: ' + claims.length + ' <button id="clearList" class="pill-action">Clear List</button>' }
+  const totalLocal = claims.reduce(function(sum, c){ const v = parseFloat(c.local_amount); return sum + (isNaN(v) ? 0 : v) }, 0)
+  if (count) { count.innerHTML = 'Items: ' + claims.length + ' · Local Total: MYR ' + totalLocal.toFixed(2) + ' <button id="clearList" class="pill-action">Clear List</button>' }
   $('#clearList').off('click').on('click', function(){
     const ok = window.confirm('Clear all saved items?')
     if (!ok) return
@@ -423,8 +595,9 @@ function renderClaimsList(){
     if (c.status === 'unsuccessful') { const badge = document.createElement('span'); badge.className = 'badge error'; badge.textContent = 'Unsuccessful Scan'; title.appendChild(badge) }
     const subtitle = document.createElement('div')
     subtitle.className = 'subtitle'
-    const amt = parseFloat(c.total_amount)
-    subtitle.textContent = (isNaN(amt) ? '' : ('$' + amt.toFixed(2))) + ' | 1 receipt'
+    const amt = parseFloat(c.local_amount != null && c.local_amount !== '' ? c.local_amount : c.total_amount)
+    const cur = c.currency || 'MYR'
+    subtitle.textContent = (isNaN(amt) ? '' : (cur + ' ' + amt.toFixed(2))) + ' | 1 receipt'
     const meta = document.createElement('div')
     meta.className = 'meta'
     const dt = c.datetime_added ? new Date(c.datetime_added).toLocaleString() : ''
@@ -478,8 +651,16 @@ function openClaimEditor(claim){
     f.className = 'field'
     const label = document.createElement('label')
     label.textContent = key
-    const input = document.createElement('input')
-    input.value = claim[key] == null ? '' : String(claim[key])
+    let input
+    if (key === 'type_claim') {
+      input = document.createElement('select')
+      CLAIM_TYPES.forEach(function(opt){ const o = document.createElement('option'); o.value = opt; o.textContent = opt; input.appendChild(o) })
+      input.value = claim[key] == null ? '' : String(claim[key])
+    } else {
+      input = document.createElement('input')
+      if (key === 'total_amount') { input.type = 'number'; input.step = '0.01' }
+      input.value = claim[key] == null ? '' : String(claim[key])
+    }
     f.appendChild(label); f.appendChild(input)
     content.appendChild(f)
     formFields.push({ key, input })
@@ -530,6 +711,14 @@ $('#openSettings').on('click', function(){
   $('#settingsExtractHeight').val(cfg.extractHeight || '2000')
   $('#settingsCamWidth').val(cfg.camWidth || '1920')
   $('#settingsCamHeight').val(cfg.camHeight || '1080')
+  const smtp = getSMTPConfig()
+  $('#settingsSmtpHost').val(smtp.host || '')
+  $('#settingsSmtpPort').val(smtp.port || '')
+  $('#settingsSmtpUser').val(smtp.user || '')
+  $('#settingsSmtpPass').val(smtp.pass || '')
+  $('#settingsSmtpFrom').val(smtp.from || '')
+  $('#settingsSmtpTo').val(smtp.to || '')
+  $('#settingsSmtpSubject').val(smtp.subject || 'Receipts')
   $('#settingsPanel').show()
 })
 $('#closeSettings, #cancelSettings').on('click', function(){ $('#settingsPanel').hide() })
@@ -543,5 +732,58 @@ $('#saveSettings').on('click', function(){
     camHeight: $('#settingsCamHeight').val()
   }
   saveLLMConfig(cfg)
+  const smtp = {
+    host: $('#settingsSmtpHost').val(),
+    port: $('#settingsSmtpPort').val(),
+    user: $('#settingsSmtpUser').val(),
+    pass: $('#settingsSmtpPass').val(),
+    from: $('#settingsSmtpFrom').val(),
+    to: $('#settingsSmtpTo').val(),
+    subject: $('#settingsSmtpSubject').val()
+  }
+  saveSMTPConfig(smtp)
   $('#settingsPanel').hide()
 })
+async function processPdfFile(file){
+  logProcessing('Loading PDF: ' + (file.name || 'blob'))
+  const arrayBuf = await file.arrayBuffer()
+  const pdf = await window.pdfjsLib.getDocument({ data: arrayBuf }).promise
+  logProcessing('PDF pages: ' + pdf.numPages)
+  const pageImages = []
+  const { endpoint, model, apiKey } = getLLMConfig()
+  let ocrText = ''
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i)
+    const viewport = page.getViewport({ scale: 1.6 })
+    const canvas = document.createElement('canvas')
+    const ctx = canvas.getContext('2d')
+    canvas.width = Math.floor(viewport.width)
+    canvas.height = Math.floor(viewport.height)
+    await page.render({ canvasContext: ctx, viewport }).promise
+    const url = canvasToJpegDataUrl(canvas)
+    pageImages.push(url)
+    logProcessing('Rendered page ' + i + '/' + pdf.numPages)
+    if (endpoint && model && apiKey) {
+      await new Promise(function(res){ loadTesseract(res) })
+      const ocr = await window.Tesseract.recognize(canvas, 'eng')
+      ocrText += (ocr.data.text || '') + '\n\n'
+      logProcessing('OCR page ' + i)
+    }
+  }
+  let row
+  if (endpoint && model && apiKey) {
+    logProcessing('Calling LLM for PDF')
+    const json = await callLLM(endpoint, model, apiKey, ocrText)
+    const normalized = json ? normalizeParsedFields(json) : {}
+    row = addScanRow(normalized, undefined, pageImages[0])
+    if (!json) row.status = 'unsuccessful'
+  } else {
+    row = addScanRow({}, undefined, pageImages[0])
+    row.status = 'pending'
+  }
+  row.page_count = pdf.numPages
+  row.pdf_pages = pageImages
+  upsertClaimsToStorage([row])
+  renderClaimsList()
+  logProcessing('Saved PDF claim with ' + pdf.numPages + ' page(s)')
+}
