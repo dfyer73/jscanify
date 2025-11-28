@@ -94,6 +94,23 @@ function generateId(){
   return 'claim-' + Date.now() + '-' + Math.random().toString(36).slice(2,8)
 }
 
+function canvasToJpegDataUrl(canvas){
+  try {
+    const maxDim = 1600
+    let w = canvas.width, h = canvas.height
+    const scale = Math.min(1, maxDim / Math.max(w, h))
+    if (scale < 1) {
+      const c = document.createElement('canvas')
+      c.width = Math.round(w * scale)
+      c.height = Math.round(h * scale)
+      const x = c.getContext('2d')
+      x.drawImage(canvas, 0, 0, c.width, c.height)
+      return c.toDataURL('image/jpeg', 0.8)
+    }
+    return canvas.toDataURL('image/jpeg', 0.8)
+  } catch { return canvas.toDataURL('image/jpeg', 0.8) }
+}
+
 function computeTargetSizeAndCorners(source){
   const contour = scanner.findPaperContour(cv.imread(source))
   if (!contour) return null
@@ -236,7 +253,7 @@ $(function(){
         const newRows = []
         for (const item of items) {
           const canvas = item.querySelector('canvas')
-          const dataUrl = canvas.toDataURL('image/png')
+          const dataUrl = canvasToJpegDataUrl(canvas)
           logProcessing('Running OCR')
           const ocr = await window.Tesseract.recognize(canvas, 'eng')
           const text = ocr.data.text
@@ -274,7 +291,7 @@ async function callLLM(endpoint, model, apiKey, text){
 function maybeOcrAndAddRow(canvas, id){
   const { endpoint, model, apiKey } = getLLMConfig()
   return new Promise(function(resolve){
-    const dataUrl = canvas.toDataURL('image/png')
+    const dataUrl = canvasToJpegDataUrl(canvas)
     if (!endpoint || !model || !apiKey) {
       logProcessing('LLM settings missing; saving image without parsed fields')
       const row = addScanRow({}, id, dataUrl)
