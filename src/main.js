@@ -3,7 +3,7 @@ import './style.css'
 const app = document.getElementById('app')
 app.innerHTML = `
   <div id="hero" style="position: relative; text-align: center;">
-    <h2>Melvin Scanner</h2>
+    <h2>Receipt and Claim Scanner</h2>
     <div id="start-controls" style="margin-top: 12px; display: inline-flex; gap: 12px;">
       <label class="icon-button" title="Upload Images/PDFs">
         <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v10" stroke="#111" stroke-width="2"/><path d="M8 7l4-4 4 4" stroke="#111" stroke-width="2"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" stroke="#111" stroke-width="2"/></svg>
@@ -19,9 +19,13 @@ app.innerHTML = `
   </div>
   <div id="content">
     <div id="start">
-      <div id="camera" style="display:none">
+      <div id="camera" style="display:none; position: relative;">
         <video id="video" autoplay playsinline></video>
         <button id="captureOverlay" style="display:none">Capture</button>
+        <button id="toggleTorch" class="camera-toolbar-button" title="Toggle Light" style="display:none" aria-label="Toggle Light">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M7 3h10l-2 5H9L7 3Z" stroke="#111" stroke-width="2"/><rect x="10" y="9" width="4" height="10" rx="1" stroke="#111" stroke-width="2"/><path d="M12 19v2" stroke="#f59e0b" stroke-width="2"/></svg>
+        </button>
+        <div id="torchIndicator" class="torch-indicator">Light: Off</div>
       </div>
       <div id="results" style="display:none">Select or capture images to see border detection results</div>
       <div id="claimsCount" class="count-pill"></div>
@@ -193,6 +197,7 @@ function computeTargetSizeAndCorners(source){
 }
 
 let mediaStream
+let torchOn = false
 const scanColumns = ['merchant_name','merchant_address','transaction_date','transaction_time','total_amount','currency','local_amount','type_claim','purpose']
 const CLAIM_TYPES = ['Broadband','Car Maintenance','Car Rental','Computer','Company Admin','Domain','Entertainment','Gift','Leave Passage','Medical','Mobile Plan','Outsourcing','Parking','Software','Stationery','Subscription','Transport','Travel (Hotel)','Travel (Air ticket)','Web Services']
 const STORAGE_KEY = 'jscanify_claims'
@@ -270,6 +275,11 @@ $(function(){
       const video = document.getElementById('video')
       video.srcObject = mediaStream
       $('#camera').show(); $('#captureOverlay').prop('disabled', true).show()
+      const track = mediaStream.getVideoTracks && mediaStream.getVideoTracks()[0]
+      try {
+        const caps = track && track.getCapabilities ? track.getCapabilities() : {}
+        if (caps && caps.torch) { $('#toggleTorch').show(); $('#torchIndicator').show().text('Light: Off'); torchOn = false } else { $('#toggleTorch').hide(); $('#torchIndicator').hide(); torchOn = false }
+      } catch { $('#toggleTorch').hide(); $('#torchIndicator').hide(); torchOn = false }
       video.onloadedmetadata = function(){ $('#captureOverlay').prop('disabled', false) }
     } catch (err) { $('#results').text('Camera error: ' + (err && err.message ? err.message : err)) }
   })
@@ -283,6 +293,7 @@ $(function(){
     const ctx = canvas.getContext('2d'); ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     if (mediaStream) { mediaStream.getTracks().forEach(function(t){ t.stop() }); mediaStream = null }
     $('#camera').hide(); $('#captureOverlay').hide()
+    $('#toggleTorch').hide(); $('#torchIndicator').hide(); torchOn = false
     loadOpenCV(function(){
       try {
         logProcessing('Detecting document edges')
@@ -292,6 +303,24 @@ $(function(){
         else { hideProcessing(); const m = document.createElement('div'); m.textContent = 'No document detected in capture.'; $('#results').append(m) }
       } catch (e) { logProcessing('Error: ' + (e && e.message ? e.message : String(e))); hideProcessing() }
     })
+  })
+
+  $('#toggleTorch').on('click', async function(){
+    try {
+      const track = mediaStream && mediaStream.getVideoTracks && mediaStream.getVideoTracks()[0]
+      if (!track) { showAlert('No active camera stream'); return }
+      const caps = track.getCapabilities ? track.getCapabilities() : {}
+      if (!caps.torch) { showAlert('Torch not supported on this device'); return }
+      torchOn = !torchOn
+      await track.applyConstraints({ advanced: [ { torch: torchOn } ] })
+      $('#torchIndicator').text(torchOn ? 'Light: On' : 'Light: Off')
+      if (torchOn) { $('#toggleTorch').addClass('on') } else { $('#toggleTorch').removeClass('on') }
+    } catch (e) {
+      torchOn = false
+      $('#torchIndicator').text('Light: Off')
+      $('#toggleTorch').removeClass('on')
+      showAlert('Failed to toggle torch')
+    }
   })
 
   $('#exportPdf').on('click', function(){
