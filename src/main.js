@@ -363,9 +363,10 @@ function removeClaimById(id){
 }
 function upsertClaimsToStorage(rows){
   const existing = loadClaims()
-  const newKeys = new Set(rows.map(function(r){ return claimKey(r) }))
-  const merged = rows.concat(existing.filter(function(c){ return !newKeys.has(claimKey(c)) }))
-  saveClaims(merged)
+  const byId = new Map()
+  existing.forEach(function(c){ if (c && c._id) { byId.set(c._id, c) } })
+  rows.forEach(function(r){ if (r && r._id) { byId.set(r._id, r) } })
+  saveClaims(Array.from(byId.values()))
 }
 function renderClaimsList(){
   const claims = loadClaims()
