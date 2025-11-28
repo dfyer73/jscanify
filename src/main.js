@@ -214,22 +214,26 @@ $(function(){
     const { endpoint, model, apiKey } = getLLMConfig()
     if (!endpoint || !model || !apiKey) { alert('Set LLM settings first'); return }
     loadTesseract(async function(){
-      const newRows = []
-      for (const item of items) {
-        const canvas = item.querySelector('canvas')
-        const dataUrl = canvas.toDataURL('image/png')
-        logProcessing('Running OCR')
-        const ocr = await window.Tesseract.recognize(canvas, 'eng')
-        const text = ocr.data.text
-        logProcessing('Calling LLM to extract fields')
-        const json = await callLLM(endpoint, model, apiKey, text)
-        if (json) { const row = addScanRow(json, item.dataset.id, dataUrl); newRows.push(row) } else { const row = addScanRow({}, item.dataset.id, dataUrl); row.status = 'unsuccessful'; newRows.push(row) }
+      try {
+        const newRows = []
+        for (const item of items) {
+          const canvas = item.querySelector('canvas')
+          const dataUrl = canvas.toDataURL('image/png')
+          logProcessing('Running OCR')
+          const ocr = await window.Tesseract.recognize(canvas, 'eng')
+          const text = ocr.data.text
+          logProcessing('Calling LLM to extract fields')
+          const json = await callLLM(endpoint, model, apiKey, text)
+          if (json) { const row = addScanRow(json, item.dataset.id, dataUrl); newRows.push(row) } else { const row = addScanRow({}, item.dataset.id, dataUrl); row.status = 'unsuccessful'; newRows.push(row) }
+        }
+        logProcessing('Saving to Local Storage')
+        try { upsertClaimsToStorage(newRows) } catch (e) { logProcessing('Storage error: ' + (e && e.message ? e.message : String(e))) }
+        logProcessing('Updating list')
+        try { renderClaimsList() } catch (e) { logProcessing('Render error: ' + (e && e.message ? e.message : String(e))) }
+        logProcessing('Done')
+      } finally {
+        hideProcessing()
       }
-      logProcessing('Saving to Local Storage')
-      upsertClaimsToStorage(newRows)
-      logProcessing('Updating list')
-      renderClaimsList()
-      hideProcessing()
     })
   })
 })
@@ -251,19 +255,25 @@ function maybeOcrAndAddRow(canvas, id){
   return new Promise(function(resolve){
     if (!endpoint || !model || !apiKey) { resolve(); return }
     loadTesseract(async function(){
-      logProcessing('Running OCR')
-      const ocr = await window.Tesseract.recognize(canvas, 'eng')
-      const text = ocr.data.text
-      logProcessing('Calling LLM to extract fields')
-      const json = await callLLM(endpoint, model, apiKey, text)
-      const dataUrl = canvas.toDataURL('image/png')
-      let row
-      if (json) { row = addScanRow(json, id, dataUrl) } else { row = addScanRow({}, id, dataUrl); row.status = 'unsuccessful' }
-      logProcessing('Saving to Local Storage')
-      upsertClaimsToStorage([row])
-      logProcessing('Updating list')
-      renderClaimsList()
-      resolve()
+      try {
+        logProcessing('Running OCR')
+        const ocr = await window.Tesseract.recognize(canvas, 'eng')
+        const text = ocr.data.text
+        logProcessing('Calling LLM to extract fields')
+        const json = await callLLM(endpoint, model, apiKey, text)
+        const dataUrl = canvas.toDataURL('image/png')
+        let row
+        if (json) { row = addScanRow(json, id, dataUrl) } else { row = addScanRow({}, id, dataUrl); row.status = 'unsuccessful' }
+        logProcessing('Saving to Local Storage')
+        try { upsertClaimsToStorage([row]) } catch (e) { logProcessing('Storage error: ' + (e && e.message ? e.message : String(e))) }
+        logProcessing('Updating list')
+        try { renderClaimsList() } catch (e) { logProcessing('Render error: ' + (e && e.message ? e.message : String(e))) }
+        logProcessing('Done')
+      } catch (e) {
+        logProcessing('Error: ' + (e && e.message ? e.message : String(e)))
+      } finally {
+        resolve()
+      }
     })
   })
 }
