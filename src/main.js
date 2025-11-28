@@ -89,6 +89,11 @@ const scanner = new window.jscanify()
 function loadJsPDF(onComplete){ if (window.jspdf && window.jspdf.jsPDF) { onComplete() } else { const s=document.createElement('script'); s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js'; s.onload=onComplete; document.body.appendChild(s) } }
 function loadTesseract(onComplete){ if (window.Tesseract) { onComplete() } else { const s=document.createElement('script'); s.src='https://unpkg.com/tesseract.js@v4/dist/tesseract.min.js'; s.onload=onComplete; document.body.appendChild(s) } }
 
+function generateId(){
+  if (window.crypto && window.crypto.randomUUID) { return 'claim-' + window.crypto.randomUUID() }
+  return 'claim-' + Date.now() + '-' + Math.random().toString(36).slice(2,8)
+}
+
 function computeTargetSizeAndCorners(source){
   const contour = scanner.findPaperContour(cv.imread(source))
   if (!contour) return null
@@ -241,6 +246,8 @@ $(function(){
         }
         logProcessing('Saving to Local Storage')
         try { upsertClaimsToStorage(newRows) } catch (e) { logProcessing('Storage error: ' + (e && e.message ? e.message : String(e))) }
+        if (newRows.length) { logProcessing('New claim id(s): ' + newRows.map(function(r){ return r._id }).join(', ')) }
+        logProcessing('Claims count: ' + loadClaims().length)
         logProcessing('Updating list')
         try { renderClaimsList() } catch (e) { logProcessing('Render error: ' + (e && e.message ? e.message : String(e))) }
         logProcessing('Done')
@@ -288,6 +295,8 @@ function maybeOcrAndAddRow(canvas, id){
         if (json) { row = addScanRow(json, id, dataUrl) } else { row = addScanRow({}, id, dataUrl); row.status = 'unsuccessful'; showAlert('LLM parsing failed. Check model and endpoint settings.') }
         logProcessing('Saving to Local Storage')
         try { upsertClaimsToStorage([row]) } catch (e) { logProcessing('Storage error: ' + (e && e.message ? e.message : String(e))) }
+        logProcessing('New claim id: ' + row._id)
+        logProcessing('Claims count: ' + loadClaims().length)
         logProcessing('Updating list')
         try { renderClaimsList() } catch (e) { logProcessing('Render error: ' + (e && e.message ? e.message : String(e))) }
         logProcessing('Done')
@@ -304,7 +313,7 @@ function maybeOcrAndAddRow(canvas, id){
 function addScanRow(obj, id, imageData){
   const row = {}
   scanColumns.forEach(function(key){ row[key] = obj && obj[key] != null ? obj[key] : '' })
-  row._id = 'claim-' + Date.now() + '-' + Math.random().toString(36).slice(2,8)
+  row._id = generateId()
   if (id) row.source_id = id
   if (imageData) row.image_data = imageData
   if (!row.datetime_added) row.datetime_added = new Date().toISOString()
