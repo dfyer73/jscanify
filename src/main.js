@@ -333,7 +333,7 @@ $(function(){
     const omit = new Set(['_id','datetime_added','merchant_address','page_count','tyoe_claim','source_id','image_data','pdf_pages'])
     const union = new Set()
     claims.forEach(function(c){ Object.keys(c).forEach(function(k){ if (!omit.has(k)) union.add(k) }) })
-    const preferred = ['merchant_name','transaction_date','transaction_time','total_amount','local_amount','currency','type_claim','purpose']
+    const preferred = ['merchant_name','transaction_date','transaction_time','currency','total_amount','local_amount','type_claim','purpose']
     const keys = preferred.filter(function(k){ return union.has(k) || k === 'type_claim' }).concat(Array.from(union).filter(function(k){ return preferred.indexOf(k) === -1 }))
     const rows = []
     rows.push(keys.join(','))
