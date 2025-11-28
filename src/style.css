@@ -77,8 +77,8 @@ html, body { margin: 0; font-family: "Lato"; }
 .claim-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }
 .claim-header .title { font-weight: 600; }
 .claim-header .actions { display: flex; gap: 8px; }
-.claim-header .icon-btn { width: 36px; height: 36px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; background: #fff; border: 1px solid #e5e7eb; cursor: pointer; }
-.claim-header .icon-btn svg { width: 20px; height: 20px; }
+.claim-header .icon-btn { width: 48px; height: 48px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; background: #fff; border: 1px solid #e5e7eb; cursor: pointer; }
+.claim-header .icon-btn svg { width: 26px; height: 26px; }
 .claim-content { padding: 16px; }
 .claim-image { margin-bottom: 12px; display: flex; justify-content: center; }
 .claim-image img { max-width: 100%; border-radius: 12px; border: 1px solid #e5e7eb; }
