@@ -156,25 +156,28 @@ $(function(){
       mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: w }, height: { ideal: h } } })
       const video = document.getElementById('video')
       video.srcObject = mediaStream
-      $('#camera').show(); $('#captureOverlay').show()
+      $('#camera').show(); $('#captureOverlay').prop('disabled', true).show()
+      video.onloadedmetadata = function(){ $('#captureOverlay').prop('disabled', false) }
     } catch (err) { $('#results').text('Camera error: ' + (err && err.message ? err.message : err)) }
   })
 
   $('#captureOverlay').on('click', function(){
     showProcessing(); logProcessing('Capturing photo from camera')
     const video = document.getElementById('video')
-    if (!video.videoWidth || !video.videoHeight) return
+    if (!video.videoWidth || !video.videoHeight) { logProcessing('Camera not ready'); hideProcessing(); return }
     const canvas = document.createElement('canvas')
     canvas.width = video.videoWidth; canvas.height = video.videoHeight
     const ctx = canvas.getContext('2d'); ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     if (mediaStream) { mediaStream.getTracks().forEach(function(t){ t.stop() }); mediaStream = null }
     $('#camera').hide(); $('#captureOverlay').hide()
     loadOpenCV(function(){
-      logProcessing('Detecting document edges')
-      const target = computeTargetSizeAndCorners(canvas)
-      const extractedCanvas = target ? scanner.extractPaper(canvas, target.resultWidth, target.resultHeight, target.cornerPoints) : null
-      if (extractedCanvas) { logProcessing('Extracted document'); const id = appendResultCanvas(extractedCanvas); maybeOcrAndAddRow(extractedCanvas, id).finally(function(){ hideProcessing() }) }
-      else { hideProcessing(); const m = document.createElement('div'); m.textContent = 'No document detected in capture.'; $('#results').append(m) }
+      try {
+        logProcessing('Detecting document edges')
+        const target = computeTargetSizeAndCorners(canvas)
+        const extractedCanvas = target ? scanner.extractPaper(canvas, target.resultWidth, target.resultHeight, target.cornerPoints) : null
+        if (extractedCanvas) { logProcessing('Extracted document'); const id = appendResultCanvas(extractedCanvas); maybeOcrAndAddRow(extractedCanvas, id).finally(function(){ hideProcessing() }) }
+        else { hideProcessing(); const m = document.createElement('div'); m.textContent = 'No document detected in capture.'; $('#results').append(m) }
+      } catch (e) { logProcessing('Error: ' + (e && e.message ? e.message : String(e))); hideProcessing() }
     })
   })
 
@@ -248,13 +251,17 @@ function maybeOcrAndAddRow(canvas, id){
   return new Promise(function(resolve){
     if (!endpoint || !model || !apiKey) { resolve(); return }
     loadTesseract(async function(){
+      logProcessing('Running OCR')
       const ocr = await window.Tesseract.recognize(canvas, 'eng')
       const text = ocr.data.text
+      logProcessing('Calling LLM to extract fields')
       const json = await callLLM(endpoint, model, apiKey, text)
       const dataUrl = canvas.toDataURL('image/png')
       let row
       if (json) { row = addScanRow(json, id, dataUrl) } else { row = addScanRow({}, id, dataUrl); row.status = 'unsuccessful' }
+      logProcessing('Saving to Local Storage')
       upsertClaimsToStorage([row])
+      logProcessing('Updating list')
       renderClaimsList()
       resolve()
     })
@@ -264,7 +271,6 @@ function maybeOcrAndAddRow(canvas, id){
 function addScanRow(obj, id, imageData){
   const row = {}
   scanColumns.forEach(function(key){ row[key] = obj && obj[key] != null ? obj[key] : '' })
-  // Always generate a unique persistent claim id; keep source_id to link UI result items
   row._id = 'claim-' + Date.now() + '-' + Math.random().toString(36).slice(2,8)
   if (id) row.source_id = id
   if (imageData) row.image_data = imageData
