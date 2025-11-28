@@ -25,6 +25,7 @@ app.innerHTML = `
       </div>
       <div id="results" style="display:none">Select or capture images to see border detection results</div>
       <div id="claimsCount" class="count-pill"></div>
+      <div id="alertBar" class="alert-bar"></div>
       <div id="claimsList" class="mobile-list"></div>
       <div id="claimEditor" class="claim-editor" style="display:none"></div>
       <div id="action-controls">
@@ -114,6 +115,19 @@ function logProcessing(msg){
   try {
     const logs = document.getElementById('processingLogs')
     if (logs) { const line = document.createElement('div'); line.textContent = msg; logs.appendChild(line); logs.scrollTop = logs.scrollHeight }
+  } catch {}
+}
+
+function showAlert(msg){
+  try {
+    const bar = document.getElementById('alertBar')
+    if (!bar) return
+    bar.innerHTML = ''
+    const el = document.createElement('div')
+    el.className = 'alert'
+    el.textContent = msg
+    bar.appendChild(el)
+    setTimeout(function(){ if (bar.contains(el)) { bar.innerHTML = '' } }, 6000)
   } catch {}
 }
 
@@ -242,17 +256,18 @@ async function callLLM(endpoint, model, apiKey, text){
   const body = { model, messages: [ { role: 'system', content: 'You are a parser that outputs only JSON.' }, { role: 'user', content: prompt + '\n\nReceipt OCR:\n' + text } ], response_format: { type: 'json_object' } }
   try {
     const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey }, body: JSON.stringify(body) })
+    if (!res.ok) { showAlert('LLM call failed (' + res.status + '). Check API key/model/endpoint.'); return null }
     const data = await res.json()
     const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content
     if (!content) return null
     return JSON.parse(content)
-  } catch (e) { return null }
+  } catch (e) { showAlert('LLM error: ' + (e && e.message ? e.message : String(e))); return null }
 }
 
 function maybeOcrAndAddRow(canvas, id){
   const { endpoint, model, apiKey } = getLLMConfig()
   return new Promise(function(resolve){
-    if (!endpoint || !model || !apiKey) { resolve(); return }
+    if (!endpoint || !model || !apiKey) { logProcessing('LLM settings missing'); showAlert('LLM settings missing. Set API key, endpoint, and model in Settings.'); resolve(); return }
     loadTesseract(async function(){
       try {
         logProcessing('Running OCR')
@@ -262,7 +277,7 @@ function maybeOcrAndAddRow(canvas, id){
         const json = await callLLM(endpoint, model, apiKey, text)
         const dataUrl = canvas.toDataURL('image/png')
         let row
-        if (json) { row = addScanRow(json, id, dataUrl) } else { row = addScanRow({}, id, dataUrl); row.status = 'unsuccessful' }
+        if (json) { row = addScanRow(json, id, dataUrl) } else { row = addScanRow({}, id, dataUrl); row.status = 'unsuccessful'; showAlert('LLM parsing failed. Check model and endpoint settings.') }
         logProcessing('Saving to Local Storage')
         try { upsertClaimsToStorage([row]) } catch (e) { logProcessing('Storage error: ' + (e && e.message ? e.message : String(e))) }
         logProcessing('Updating list')
@@ -270,6 +285,7 @@ function maybeOcrAndAddRow(canvas, id){
         logProcessing('Done')
       } catch (e) {
         logProcessing('Error: ' + (e && e.message ? e.message : String(e)))
+        showAlert('OCR/LLM error: ' + (e && e.message ? e.message : String(e)))
       } finally {
         resolve()
       }
