@@ -2,23 +2,23 @@ import './style.css'
 
 const app = document.getElementById('app')
 app.innerHTML = `
-  <div id="hero" style="position: relative">
+  <div id="hero" style="position: relative; text-align: center;">
     <h2>Melvin Scanner</h2>
+    <div id="start-controls" style="margin-top: 12px; display: inline-flex; gap: 12px;">
+      <label class="icon-button" title="Upload Images">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v10" stroke="#111" stroke-width="2"/><path d="M8 7l4-4 4 4" stroke="#111" stroke-width="2"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" stroke="#111" stroke-width="2"/></svg>
+        <input type="file" id="fileInput" accept="image/*" multiple style="display:none" />
+      </label>
+      <button id="startCamera" class="icon-button" title="Use Camera">
+        <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="7" width="18" height="12" rx="3" stroke="#111" stroke-width="2"/><path d="M9 7l1.5-2h3L15 7" stroke="#111" stroke-width="2"/><circle cx="12" cy="13" r="3" stroke="#111" stroke-width="2"/></svg>
+      </button>
+      <button id="openSettings" class="icon-button" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" stroke="#111" stroke-width="2"/><path d="M4 12h2m12 0h2M12 4v2m0 12v2" stroke="#111" stroke-width="2"/></svg>
+      </button>
+    </div>
   </div>
   <div id="content">
     <div id="start">
-      <div id="start-controls">
-        <label class="icon-button" title="Upload Images">
-          <svg viewBox="0 0 24 24" fill="none"><path d="M12 3v10" stroke="#111" stroke-width="2"/><path d="M8 7l4-4 4 4" stroke="#111" stroke-width="2"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" stroke="#111" stroke-width="2"/></svg>
-          <input type="file" id="fileInput" accept="image/*" multiple style="display:none" />
-        </label>
-        <button id="startCamera" class="icon-button" title="Use Camera">
-          <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="7" width="18" height="12" rx="3" stroke="#111" stroke-width="2"/><path d="M9 7l1.5-2h3L15 7" stroke="#111" stroke-width="2"/><circle cx="12" cy="13" r="3" stroke="#111" stroke-width="2"/></svg>
-        </button>
-        <button id="openSettings" class="icon-button" title="Settings">
-          <svg viewBox="0 0 24 24" fill="none"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" stroke="#111" stroke-width="2"/><path d="M4 12h2m12 0h2M12 4v2m0 12v2" stroke="#111" stroke-width="2"/></svg>
-        </button>
-      </div>
       <div id="camera" style="display:none">
         <video id="video" autoplay playsinline></video>
         <button id="captureOverlay" style="display:none">Capture</button>
@@ -54,6 +54,18 @@ app.innerHTML = `
         <label>API Key</label>
         <input type="password" id="settingsApiKey" placeholder="Enter API key" />
       </div>
+      <div class="llm-field">
+        <label>Extract Height (px)</label>
+        <input type="number" id="settingsExtractHeight" min="500" step="100" />
+      </div>
+      <div class="llm-field">
+        <label>Camera Width (px)</label>
+        <input type="number" id="settingsCamWidth" min="640" step="160" />
+      </div>
+      <div class="llm-field">
+        <label>Camera Height (px)</label>
+        <input type="number" id="settingsCamHeight" min="480" step="120" />
+      </div>
     </div>
     <div class="actions">
       <button id="saveSettings" class="primary">Save</button>
@@ -87,7 +99,8 @@ function computeTargetSizeAndCorners(source){
   const h1 = Math.hypot(tl.x - bl.x, tl.y - bl.y), h2 = Math.hypot(tr.x - br.x, tr.y - br.y)
   const width = Math.max(w1, w2), height = Math.max(h1, h2)
   if (!width || !height) return null
-  const baseHeight = 1000
+  const cfg = getLLMConfig()
+  const baseHeight = parseInt(cfg.extractHeight || '2000')
   const resultHeight = Math.round(baseHeight)
   const resultWidth = Math.max(1, Math.round((width/height) * baseHeight))
   return { resultWidth, resultHeight, cornerPoints: pts }
@@ -127,7 +140,10 @@ $(function(){
   $('#startCamera').on('click', async function(){
     loadOpenCV(function(){})
     try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      const cfg = getLLMConfig()
+      const w = parseInt(cfg.camWidth || '1920')
+      const h = parseInt(cfg.camHeight || '1080')
+      mediaStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: w }, height: { ideal: h } } })
       const video = document.getElementById('video')
       video.srcObject = mediaStream
       $('#camera').show(); $('#captureOverlay').show()
@@ -152,9 +168,9 @@ $(function(){
   })
 
   $('#exportPdf').on('click', function(){
-    const canvases = Array.from(document.querySelectorAll('#results .result-item canvas'))
-    if (!canvases.length) { $('#results').prepend($('<div>').text('No results to export')); return }
-    loadJsPDF(function(){
+    const claims = loadClaims().filter(function(c){ return !!c.image_data })
+    if (!claims.length) { alert('No items to export'); return }
+    loadJsPDF(async function(){
       const { jsPDF } = window.jspdf
       const doc = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' })
       const pageSize = doc.internal.pageSize
@@ -163,14 +179,14 @@ $(function(){
       const maxItemW = (pageW - margin*2) * 0.45
       const maxItemH = (pageH - margin*2) * 0.45
       let x = margin, y = margin, rowH = 0
-      canvases.forEach(function(canvas){
-        let w = canvas.width, h = canvas.height
+      const images = await Promise.all(claims.map(function(c){ return new Promise(function(res){ const img = new Image(); img.onload=function(){ res({ img, url: c.image_data }) }; img.src = c.image_data }) }))
+      images.forEach(function(entry, idx){
+        let w = entry.img.naturalWidth, h = entry.img.naturalHeight
         const scale = Math.min(maxItemW / w, maxItemH / h, 1)
         w *= scale; h *= scale
         if (x + w > pageW - margin) { x = margin; y += rowH + padding; rowH = 0 }
         if (y + h > pageH - margin) { doc.addPage('a4', 'portrait'); x = margin; y = margin; rowH = 0 }
-        const dataUrl = canvas.toDataURL('image/png')
-        doc.addImage(dataUrl, 'PNG', x, y, w, h)
+        doc.addImage(entry.url, 'PNG', x, y, w, h)
         x += w + padding; rowH = Math.max(rowH, h)
       })
       doc.save('jscanify.pdf')
@@ -421,6 +437,9 @@ $('#openSettings').on('click', function(){
   $('#settingsEndpoint').val(cfg.endpoint || 'https://api.openai.com/v1/chat/completions')
   $('#settingsModel').val(cfg.model || 'gpt-4o-mini')
   $('#settingsApiKey').val(cfg.apiKey || '')
+  $('#settingsExtractHeight').val(cfg.extractHeight || '2000')
+  $('#settingsCamWidth').val(cfg.camWidth || '1920')
+  $('#settingsCamHeight').val(cfg.camHeight || '1080')
   $('#settingsPanel').show()
 })
 $('#closeSettings, #cancelSettings').on('click', function(){ $('#settingsPanel').hide() })
@@ -428,7 +447,10 @@ $('#saveSettings').on('click', function(){
   const cfg = {
     endpoint: $('#settingsEndpoint').val(),
     model: $('#settingsModel').val(),
-    apiKey: $('#settingsApiKey').val()
+    apiKey: $('#settingsApiKey').val(),
+    extractHeight: $('#settingsExtractHeight').val(),
+    camWidth: $('#settingsCamWidth').val(),
+    camHeight: $('#settingsCamHeight').val()
   }
   saveLLMConfig(cfg)
   $('#settingsPanel').hide()
