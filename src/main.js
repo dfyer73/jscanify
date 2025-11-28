@@ -34,7 +34,7 @@ app.innerHTML = `
     </div>
   </div>
 
-  <div id="processingOverlay" class="processing-overlay"><div class="spinner"></div><div>Processing...</div></div>
+  <div id="processingOverlay" class="processing-overlay"><div class="spinner"></div><div id="processingStatus">Processing...</div><div id="processingLogs" class="logs"></div></div>
 
   <div id="settingsPanel" class="settings-panel">
     <div class="header">
@@ -111,22 +111,32 @@ const scanColumns = ['merchant_name','merchant_address','transaction_date','tran
 const STORAGE_KEY = 'jscanify_claims'
 const LLM_KEY = 'jscanify_llm_config'
 
+function logProcessing(msg){
+  try {
+    const logs = document.getElementById('processingLogs')
+    if (logs) { const line = document.createElement('div'); line.textContent = msg; logs.appendChild(line); logs.scrollTop = logs.scrollHeight }
+  } catch {}
+}
+
 $(function(){
-  function showProcessing(){ $('#processingOverlay').show() }
+  function showProcessing(){ $('#processingOverlay').show(); $('#processingLogs').empty(); $('#processingStatus').text('Processing...') }
   function hideProcessing(){ $('#processingOverlay').hide() }
   $('#fileInput').on('change', function(e){
     const files = Array.from(e.target.files || [])
     if (!files.length) return
-    showProcessing()
+    showProcessing(); logProcessing('Reading ' + files.length + ' image(s)')
     loadOpenCV(function(){
       let pending = files.length
       files.forEach(function(file){
         const img = document.createElement('img')
         img.src = URL.createObjectURL(file)
         img.onload = function(){
+          logProcessing('Loaded image: ' + (file.name || 'blob'))
           const target = computeTargetSizeAndCorners(img)
+          logProcessing(target ? 'Detected document edges' : 'No document detected')
           const extractedCanvas = target ? scanner.extractPaper(img, target.resultWidth, target.resultHeight, target.cornerPoints) : null
           if (extractedCanvas) {
+            logProcessing('Extracted document')
             const id = appendResultCanvas(extractedCanvas)
             maybeOcrAndAddRow(extractedCanvas, id).finally(function(){ pending--; if (pending === 0) hideProcessing() })
           } else {
@@ -151,7 +161,7 @@ $(function(){
   })
 
   $('#captureOverlay').on('click', function(){
-    showProcessing()
+    showProcessing(); logProcessing('Capturing photo from camera')
     const video = document.getElementById('video')
     if (!video.videoWidth || !video.videoHeight) return
     const canvas = document.createElement('canvas')
@@ -160,9 +170,10 @@ $(function(){
     if (mediaStream) { mediaStream.getTracks().forEach(function(t){ t.stop() }); mediaStream = null }
     $('#camera').hide(); $('#captureOverlay').hide()
     loadOpenCV(function(){
+      logProcessing('Detecting document edges')
       const target = computeTargetSizeAndCorners(canvas)
       const extractedCanvas = target ? scanner.extractPaper(canvas, target.resultWidth, target.resultHeight, target.cornerPoints) : null
-      if (extractedCanvas) { const id = appendResultCanvas(extractedCanvas); maybeOcrAndAddRow(extractedCanvas, id).finally(hideProcessing) }
+      if (extractedCanvas) { logProcessing('Extracted document'); const id = appendResultCanvas(extractedCanvas); maybeOcrAndAddRow(extractedCanvas, id).finally(function(){ hideProcessing() }) }
       else { hideProcessing(); const m = document.createElement('div'); m.textContent = 'No document detected in capture.'; $('#results').append(m) }
     })
   })
@@ -196,6 +207,7 @@ $(function(){
   $('#processOcr').on('click', async function(){
     const items = Array.from(document.querySelectorAll('#results .result-item'))
     if (!items.length) { $('#results').prepend($('<div>').text('No results to process')); return }
+    showProcessing(); logProcessing('Processing ' + items.length + ' result(s)')
     const { endpoint, model, apiKey } = getLLMConfig()
     if (!endpoint || !model || !apiKey) { alert('Set LLM settings first'); return }
     loadTesseract(async function(){
@@ -203,13 +215,18 @@ $(function(){
       for (const item of items) {
         const canvas = item.querySelector('canvas')
         const dataUrl = canvas.toDataURL('image/png')
+        logProcessing('Running OCR')
         const ocr = await window.Tesseract.recognize(canvas, 'eng')
         const text = ocr.data.text
+        logProcessing('Calling LLM to extract fields')
         const json = await callLLM(endpoint, model, apiKey, text)
         if (json) { const row = addScanRow(json, item.dataset.id, dataUrl); newRows.push(row) } else { const row = addScanRow({}, item.dataset.id, dataUrl); row.status = 'unsuccessful'; newRows.push(row) }
       }
+      logProcessing('Saving to Local Storage')
       upsertClaimsToStorage(newRows)
+      logProcessing('Updating list')
       renderClaimsList()
+      hideProcessing()
     })
   })
 })
@@ -247,8 +264,9 @@ function maybeOcrAndAddRow(canvas, id){
 function addScanRow(obj, id, imageData){
   const row = {}
   scanColumns.forEach(function(key){ row[key] = obj && obj[key] != null ? obj[key] : '' })
-  if (id) row._id = id
-  if (!row._id) row._id = 'claim-' + Date.now() + '-' + Math.random().toString(36).slice(2,8)
+  // Always generate a unique persistent claim id; keep source_id to link UI result items
+  row._id = 'claim-' + Date.now() + '-' + Math.random().toString(36).slice(2,8)
+  if (id) row.source_id = id
   if (imageData) row.image_data = imageData
   if (!row.datetime_added) row.datetime_added = new Date().toISOString()
   return row
@@ -298,10 +316,10 @@ function loadClaims(){
 function saveClaims(claims){
   localStorage.setItem(STORAGE_KEY, JSON.stringify(claims))
 }
-function claimKey(c){ return c && (c._id || (c.datetime_added || '') + '-' + (c.merchant_name||'') + '-' + (c.transaction_date||'') + '-' + (c.total_amount||'')) }
+function claimKey(c){ return c && c._id }
 function removeClaimById(id){
   const claims = loadClaims()
-  const filtered = claims.filter(function(c){ return claimKey(c) !== id })
+  const filtered = claims.filter(function(c){ return c.source_id !== id && claimKey(c) !== id })
   saveClaims(filtered)
 }
 function upsertClaimsToStorage(rows){
@@ -313,7 +331,13 @@ function upsertClaimsToStorage(rows){
 function renderClaimsList(){
   const claims = loadClaims()
   const count = document.getElementById('claimsCount')
-  if (count) { count.textContent = 'Items: ' + claims.length }
+  if (count) { count.innerHTML = 'Items: ' + claims.length + ' <button id="clearList" class="pill-action">Clear List</button>' }
+  $('#clearList').off('click').on('click', function(){
+    const ok = window.confirm('Clear all saved items?')
+    if (!ok) return
+    saveClaims([])
+    renderClaimsList()
+  })
   claims.sort(function(a,b){
     const ta = a && a.datetime_added ? Date.parse(a.datetime_added) : 0
     const tb = b && b.datetime_added ? Date.parse(b.datetime_added) : 0
