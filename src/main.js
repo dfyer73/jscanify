@@ -267,7 +267,16 @@ async function callLLM(endpoint, model, apiKey, text){
 function maybeOcrAndAddRow(canvas, id){
   const { endpoint, model, apiKey } = getLLMConfig()
   return new Promise(function(resolve){
-    if (!endpoint || !model || !apiKey) { logProcessing('LLM settings missing'); showAlert('LLM settings missing. Set API key, endpoint, and model in Settings.'); resolve(); return }
+    const dataUrl = canvas.toDataURL('image/png')
+    if (!endpoint || !model || !apiKey) {
+      logProcessing('LLM settings missing; saving image without parsed fields')
+      const row = addScanRow({}, id, dataUrl)
+      row.status = 'pending'
+      try { upsertClaimsToStorage([row]) } catch (e) {}
+      try { renderClaimsList() } catch (e) {}
+      showAlert('LLM settings missing. Saved image; no fields parsed.')
+      resolve(); return
+    }
     loadTesseract(async function(){
       try {
         logProcessing('Running OCR')
@@ -275,7 +284,6 @@ function maybeOcrAndAddRow(canvas, id){
         const text = ocr.data.text
         logProcessing('Calling LLM to extract fields')
         const json = await callLLM(endpoint, model, apiKey, text)
-        const dataUrl = canvas.toDataURL('image/png')
         let row
         if (json) { row = addScanRow(json, id, dataUrl) } else { row = addScanRow({}, id, dataUrl); row.status = 'unsuccessful'; showAlert('LLM parsing failed. Check model and endpoint settings.') }
         logProcessing('Saving to Local Storage')
