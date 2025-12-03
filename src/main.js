@@ -179,6 +179,33 @@ function canvasToJpegDataUrl(canvas){
   } catch { return canvas.toDataURL('image/jpeg', 0.8) }
 }
 
+function enhanceCanvasForOCR(srcCanvas){
+  try {
+    if (!window.cv) return srcCanvas
+    const mat = cv.imread(srcCanvas)
+    const gray = new cv.Mat()
+    cv.cvtColor(mat, gray, cv.COLOR_RGBA2GRAY)
+    const blur = new cv.Mat()
+    cv.GaussianBlur(gray, blur, new cv.Size(3,3), 0, 0, cv.BORDER_DEFAULT)
+    const bin = new cv.Mat()
+    cv.threshold(blur, bin, 0, 255, cv.THRESH_BINARY | cv.THRESH_OTSU)
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(2,2))
+    const closed = new cv.Mat()
+    cv.morphologyEx(bin, closed, cv.MORPH_CLOSE, kernel)
+    let out = new cv.Mat()
+    const maxDim = 1800
+    const w = closed.cols, h = closed.rows
+    const scale = Math.min(1, maxDim / Math.max(w, h))
+    if (scale < 1) { const dsize = new cv.Size(Math.round(w*scale), Math.round(h*scale)); cv.resize(closed, out, dsize, 0, 0, cv.INTER_AREA) }
+    else { out = closed.clone() }
+    const dstCanvas = document.createElement('canvas')
+    dstCanvas.width = out.cols; dstCanvas.height = out.rows
+    cv.imshow(dstCanvas, out)
+    mat.delete(); gray.delete(); blur.delete(); bin.delete(); kernel.delete(); closed.delete(); out.delete()
+    return dstCanvas
+  } catch { return srcCanvas }
+}
+
 function computeTargetSizeAndCorners(source){
   const contour = scanner.findPaperContour(cv.imread(source))
   if (!contour) return null
@@ -479,8 +506,10 @@ $(function(){
         for (const item of items) {
           const canvas = item.querySelector('canvas')
           const dataUrl = canvasToJpegDataUrl(canvas)
+          logProcessing('Enhancing image for OCR')
+          const ocrCanvas = enhanceCanvasForOCR(canvas)
           logProcessing('Running OCR')
-          const ocr = await window.Tesseract.recognize(canvas, 'eng')
+          const ocr = await window.Tesseract.recognize(ocrCanvas, 'eng')
           const text = ocr.data.text
           logProcessing('Calling LLM to extract fields')
           const json = await callLLM(endpoint, model, apiKey, text)
@@ -580,8 +609,10 @@ function maybeOcrAndAddRow(canvas, id){
     }
     loadTesseract(async function(){
       try {
+        logProcessing('Enhancing image for OCR')
+        const ocrCanvas = enhanceCanvasForOCR(canvas)
         logProcessing('Running OCR')
-        const ocr = await window.Tesseract.recognize(canvas, 'eng')
+        const ocr = await window.Tesseract.recognize(ocrCanvas, 'eng')
         const text = ocr.data.text
         logProcessing('Calling LLM to extract fields')
         const json = await callLLM(endpoint, model, apiKey, text)
@@ -933,12 +964,14 @@ async function processPdfFile(file){
     const url = canvasToJpegDataUrl(canvas)
     pageImages.push(url)
     logProcessing('Rendered page ' + i + '/' + pdf.numPages)
-    if (endpoint && model && apiKey) {
-      await new Promise(function(res){ loadTesseract(res) })
-      const ocr = await window.Tesseract.recognize(canvas, 'eng')
-      ocrText += (ocr.data.text || '') + '\n\n'
-      logProcessing('OCR page ' + i)
-    }
+      if (endpoint && model && apiKey) {
+        await new Promise(function(res){ loadTesseract(res) })
+        logProcessing('Enhancing image for OCR')
+        const ocrCanvas = enhanceCanvasForOCR(canvas)
+        const ocr = await window.Tesseract.recognize(ocrCanvas, 'eng')
+        ocrText += (ocr.data.text || '') + '\n\n'
+        logProcessing('OCR page ' + i)
+      }
   }
   let row
   if (endpoint && model && apiKey) {
