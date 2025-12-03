@@ -82,12 +82,31 @@ html, body { margin: 0; font-family: "Lato"; }
 .claim-content { padding: 16px; }
 .claim-image { margin-bottom: 12px; display: flex; justify-content: center; }
 .claim-image img { max-width: 100%; border-radius: 12px; border: 1px solid #e5e7eb; }
+.claim-image canvas { max-width: 100%; border-radius: 12px; border: 1px solid #e5e7eb; }
 .claim-editor .field { display: flex; flex-direction: column; margin-bottom: 10px; }
 .claim-editor .field label { font-size: 12px; color: #374151; margin-bottom: 4px; }
 .claim-editor .field input { padding: 8px; border: 1px solid #d1d5db; border-radius: 8px; }
 .claim-editor .actions { display: flex; gap: 8px; margin-top: 10px; }
 .claim-editor .actions button { padding: 10px 14px; border-radius: 8px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; }
 .claim-editor .actions .primary { background: #1e85ff; color: #fff; border-color: #1e85ff; }
+
+.img-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; margin-bottom: 8px; }
+.img-controls .slider { width: 160px; }
+.ocr-status { text-align: center; font-size: 13px; color: #374151; margin-top: 6px; }
+.nav-controls { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 8px; }
+.low-confidence { border-color: #fca5a5 !important; box-shadow: 0 0 0 2px rgba(244,63,94,0.2); }
+
+.icon-btn { width: 40px; height: 40px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; background: #fff; border: 1px solid #e5e7eb; cursor: pointer; }
+.icon-btn svg { width: 20px; height: 20px; }
+
+.supporting-section { margin-top: 8px; }
+.supporting-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.supporting-actions { display: flex; gap: 8px; }
+.supporting-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.supporting-item { position: relative; border: 1px solid #e5e7eb; border-radius: 8px; padding: 6px; background: #fff; }
+.supporting-item img { max-width: 160px; border-radius: 6px; display: block; }
+.support-remove { position: absolute; top: 6px; right: 6px; background: #fff; border: 1px solid #e5e7eb; border-radius: 999px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+.support-remove svg { width: 16px; height: 16px; }
 
 /* hide result view */
 #results { display: none !important; }

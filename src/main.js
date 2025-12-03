@@ -225,7 +225,7 @@ function computeTargetSizeAndCorners(source){
 
 let mediaStream
 let torchOn = false
-const scanColumns = ['merchant_name','merchant_address','transaction_date','transaction_time','total_amount','currency','local_amount','type_claim','purpose']
+const scanColumns = ['merchant_name','merchant_address','transaction_date','transaction_time','total_amount','currency','local_amount','invoice_number','description','type_claim','purpose']
 const CLAIM_TYPES = ['Broadband','Car Maintenance','Car Rental','Computer','Company Admin','Domain','Entertainment','Gift','Leave Passage','Medical','Mobile Plan','Outsourcing','Parking','Software','Stationery','Subscription','Transport','Travel (Hotel)','Travel (Air ticket)','Web Services']
 const STORAGE_KEY = 'jscanify_claims'
 const LLM_KEY = 'jscanify_llm_config'
@@ -351,7 +351,7 @@ $(function(){
   })
 
   $('#exportPdf').on('click', function(){
-    const claims = loadClaims().filter(function(c){ return !!c.image_data || (c.pdf_pages && c.pdf_pages.length) })
+    const claims = loadClaims().filter(function(c){ return !!c.image_data || (c.pdf_pages && c.pdf_pages.length) || (c.support_docs && c.support_docs.length) })
     if (!claims.length) { alert('No items to export'); return }
     loadJsPDF(async function(){
       const { jsPDF } = window.jspdf
@@ -360,24 +360,40 @@ $(function(){
       const pageW = pageSize.getWidth(), pageH = pageSize.getHeight()
       const margin = 24, padding = 10
       const maxItemW = (pageW - margin*2) * 0.45
-      const maxItemH = (pageH - margin*2) * 0.45
+      const maxItemH = (pageH - margin*2) * 0.42
       let x = margin, y = margin, rowH = 0
-      async function addImage(url){
+      async function addItem(url, label){
         return new Promise(function(res){ const img = new Image(); img.onload=function(){
           let w = img.naturalWidth, h = img.naturalHeight
           const scale = Math.min(maxItemW / w, maxItemH / h, 1)
           w *= scale; h *= scale
+          const labelH = 14
           if (x + w > pageW - margin) { x = margin; y += rowH + padding; rowH = 0 }
-          if (y + h > pageH - margin) { doc.addPage('a4', 'portrait'); x = margin; y = margin; rowH = 0 }
+          if (y + h + labelH > pageH - margin) { doc.addPage('a4', 'portrait'); x = margin; y = margin; rowH = 0 }
           const fmt = url.startsWith('data:image/jpeg') ? 'JPEG' : 'PNG'
           doc.addImage(url, fmt, x, y, w, h)
-          x += w + padding; rowH = Math.max(rowH, h)
+          if (label) { doc.setFontSize(10); doc.setTextColor(55); doc.text(String(label), x, y + h + 12, { maxWidth: maxItemW }) }
+          x += w + padding; rowH = Math.max(rowH, h + labelH)
           res()
         }; img.src = url })
       }
       for (const c of claims) {
-        const urls = c.pdf_pages && c.pdf_pages.length ? c.pdf_pages : [c.image_data]
-        for (const u of urls) { await addImage(u) }
+        const mainPages = c.pdf_pages && c.pdf_pages.length ? c.pdf_pages : (c.image_data ? [c.image_data] : [])
+        if (mainPages.length) {
+          if (mainPages.length === 1) { await addItem(mainPages[0], ' ' + (c.transaction_date || '') + ', Pg 1') }
+          else { for (let i=0; i<mainPages.length; i++) { await addItem(mainPages[i], ' ' + (c.transaction_date || '') + ', Pg ' + (i+1) + ' of ' + mainPages.length) } }
+        }
+        const supp = Array.isArray(c.support_docs) ? c.support_docs : []
+        for (let sIdx = 0; sIdx < supp.length; sIdx++) {
+          const d = supp[sIdx]
+          if (Array.isArray(d.pdf_pages) && d.pdf_pages.length) {
+            for (let i = 0; i < d.pdf_pages.length; i++) {
+              await addItem(d.pdf_pages[i], 'Support Pg ' + (i+1) + ' of ' + d.pdf_pages.length)
+            }
+          } else {
+            await addItem(d.processed_url || d.original_url, 'Support Pg 1')
+          }
+        }
       }
       doc.save('jscanify.pdf')
     })
@@ -530,7 +546,7 @@ $(function(){
 })
 
 async function callLLM(endpoint, model, apiKey, text){
-  const prompt = 'Extract receipt fields as strict JSON with keys: merchant_name, merchant_address, transaction_date, transaction_time, total_amount, currency, local_amount, type_claim, purpose.\nFormatting: transaction_date as dd/mm/yyyy; transaction_time as hh:mm:ss (24h); total_amount as number with 2 decimals; currency as string. If missing, use null. Output only JSON.'
+  const prompt = 'Extract receipt fields as strict JSON with keys: merchant_name, merchant_address, transaction_date, transaction_time, total_amount, currency, local_amount, invoice_number, description, type_claim, purpose.\nFormatting: transaction_date as dd/mm/yyyy; transaction_time as hh:mm:ss (24h); total_amount as number with 2 decimals; currency as uppercase string. Map invoice_number from invoice/order/receipt number labels if present (e.g., Invoice No, Order #, Receipt). description should be a concise item/transaction description.\nChoose type_claim closest to the description from this list: ' + JSON.stringify(CLAIM_TYPES) + '. If unclear, set type_claim to null.\nProvide purpose as a short summary (6–12 words). If missing, set purpose to null. Output only JSON.'
   const body = { model, messages: [ { role: 'system', content: 'You are a parser that outputs only JSON.' }, { role: 'user', content: prompt + '\n\nReceipt OCR:\n' + text } ], response_format: { type: 'json_object' } }
   try {
     const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey }, body: JSON.stringify(body) })
@@ -591,6 +607,46 @@ function normalizeParsedFields(obj){
   }
   if (out.tyoe_claim && !out.type_claim) { out.type_claim = out.tyoe_claim; delete out.tyoe_claim }
   if (out.type_claim && !CLAIM_TYPES.includes(out.type_claim)) { out.type_claim = out.type_claim }
+  function inferTypeClaimFromDescription(desc){
+    if (!desc) return ''
+    const s = String(desc).toLowerCase()
+    const rules = [
+      { type: 'Broadband', kw: ['broadband','fiber','internet','wifi'] },
+      { type: 'Mobile Plan', kw: ['mobile','cell','sim','data plan','telco'] },
+      { type: 'Transport', kw: ['taxi','grab','uber','bus','train','transport','fuel','petrol'] },
+      { type: 'Parking', kw: ['parking','park'] },
+      { type: 'Travel (Hotel)', kw: ['hotel','accommodation','lodging'] },
+      { type: 'Travel (Air ticket)', kw: ['flight','air ticket','airline'] },
+      { type: 'Software', kw: ['software','license','subscription','saas'] },
+      { type: 'Subscription', kw: ['subscription','renewal','monthly','annual'] },
+      { type: 'Stationery', kw: ['stationery','pen','paper','notebook'] },
+      { type: 'Web Services', kw: ['domain','hosting','server','cloud','dns','ssl','web'] },
+      { type: 'Computer', kw: ['laptop','desktop','monitor','keyboard','mouse','ssd','ram'] },
+      { type: 'Car Maintenance', kw: ['service','maintenance','car','tyre','battery'] },
+      { type: 'Car Rental', kw: ['car rental','rent-a-car','vehicle rental'] },
+      { type: 'Medical', kw: ['clinic','medical','doctor','pharmacy'] },
+      { type: 'Entertainment', kw: ['meal','restaurant','food','entertainment','coffee'] },
+      { type: 'Company Admin', kw: ['admin','stamp','government','fee'] },
+      { type: 'Gift', kw: ['gift','present'] },
+      { type: 'Outsourcing', kw: ['outsource','contractor','freelance','service fee'] }
+    ]
+    for (const r of rules) { if (r.kw.some(function(k){ return s.indexOf(k) !== -1 })) return r.type }
+    return ''
+  }
+  if ((!out.type_claim || String(out.type_claim).trim() === '') && out.description) {
+    const guess = inferTypeClaimFromDescription(out.description)
+    if (guess) out.type_claim = guess
+  }
+  if (out.description) {
+    const s = String(out.description).toLowerCase()
+    if (s.indexOf('restaurant') !== -1 || s.indexOf('food') !== -1 || s.indexOf('meal') !== -1 || s.indexOf('dining') !== -1 || s.indexOf('cafe') !== -1 || s.indexOf('coffee') !== -1) {
+      out.type_claim = 'Entertainment'
+    }
+  }
+  if ((!out.purpose || String(out.purpose).trim() === '') && out.description) {
+    const words = String(out.description).trim().replace(/\s+/g,' ').split(' ')
+    out.purpose = words.slice(0, 12).join(' ')
+  }
   return out
 }
 
@@ -729,13 +785,15 @@ function renderClaimsList(){
     text.className = 'text'
     const title = document.createElement('div')
     title.className = 'title'
-    title.textContent = c.purpose || c.merchant_name || 'Receipt'
+    const ptxt = (c.purpose || '').trim()
+    const mtxt = (c.merchant_name || '').trim()
+    title.textContent = ptxt && mtxt ? (ptxt + ' - ' + mtxt) : (ptxt || mtxt || 'Receipt')
     if (c.status === 'unsuccessful') { const badge = document.createElement('span'); badge.className = 'badge error'; badge.textContent = 'Unsuccessful Scan'; title.appendChild(badge) }
     const subtitle = document.createElement('div')
     subtitle.className = 'subtitle'
     const amt = parseFloat(c.local_amount != null && c.local_amount !== '' ? c.local_amount : c.total_amount)
     const cur = c.currency || 'MYR'
-    subtitle.textContent = (isNaN(amt) ? '' : (cur + ' ' + amt.toFixed(2))) + ' | 1 receipt'
+    subtitle.textContent = (isNaN(amt) ? '' : (cur + ' ' + amt.toFixed(2)))
     const meta = document.createElement('div')
     meta.className = 'meta'
     const dt = c.datetime_added ? new Date(c.datetime_added).toLocaleString() : ''
@@ -761,7 +819,7 @@ function openClaimEditor(claim){
   const headerActions = document.createElement('div')
   headerActions.className = 'actions'
   const closeBtn = document.createElement('button')
-  closeBtn.textContent = 'Close'
+  closeBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" style="width:18px;height:18px;vertical-align:middle;margin-right:6px"><path d="M6 6l12 12M18 6L6 18" stroke="#111" stroke-width="2"/></svg> Close'
   const deleteBtn = document.createElement('button')
   deleteBtn.className = 'icon-btn'
   deleteBtn.title = 'Delete'
@@ -776,14 +834,384 @@ function openClaimEditor(claim){
   content.className = 'claim-content'
   const imgWrap = document.createElement('div')
   imgWrap.className = 'claim-image'
-  if (claim.image_data) {
-    const img = document.createElement('img')
-    img.src = claim.image_data
-    imgWrap.appendChild(img)
+
+  const navControls = document.createElement('div')
+  navControls.className = 'nav-controls'
+  const prevBtn = document.createElement('button')
+  prevBtn.className = 'icon-btn'
+  prevBtn.title = 'Previous'
+  prevBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><path d="M15 6l-6 6 6 6" stroke="#111" stroke-width="2"/></svg>'
+  const nextBtn = document.createElement('button')
+  nextBtn.className = 'icon-btn'
+  nextBtn.title = 'Next'
+  nextBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="#111" stroke-width="2"/></svg>'
+  const posText = document.createElement('div')
+  posText.style.minWidth = '80px'
+  posText.style.textAlign = 'center'
+
+  const viewCanvas = document.createElement('canvas')
+  const viewCtx = viewCanvas.getContext('2d')
+  imgWrap.appendChild(viewCanvas)
+
+  const controls = document.createElement('div')
+  controls.className = 'img-controls'
+  const zoomOutBtn = document.createElement('button')
+  zoomOutBtn.className = 'icon-btn'
+  zoomOutBtn.title = 'Zoom Out'
+  zoomOutBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6" stroke="#111" stroke-width="2"/><path d="M21 21l-4.35-4.35" stroke="#111" stroke-width="2"/><path d="M8 11h6" stroke="#111" stroke-width="2"/></svg>'
+  const zoomInBtn = document.createElement('button')
+  zoomInBtn.className = 'icon-btn'
+  zoomInBtn.title = 'Zoom In'
+  zoomInBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6" stroke="#111" stroke-width="2"/><path d="M21 21l-4.35-4.35" stroke="#111" stroke-width="2"/><path d="M11 8v6" stroke="#111" stroke-width="2"/><path d="M8 11h6" stroke="#111" stroke-width="2"/></svg>'
+  const rotLeftBtn = document.createElement('button')
+  rotLeftBtn.className = 'icon-btn'
+  rotLeftBtn.title = 'Rotate Left'
+  rotLeftBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 4v4l-3-3" stroke="#111" stroke-width="2"/><path d="M20 12a8 8 0 1 1-8-8" stroke="#111" stroke-width="2"/></svg>'
+  const rotRightBtn = document.createElement('button')
+  rotRightBtn.className = 'icon-btn'
+  rotRightBtn.title = 'Rotate Right'
+  rotRightBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 4v4l3-3" stroke="#111" stroke-width="2"/><path d="M4 12a8 8 0 1 0 8-8" stroke="#111" stroke-width="2"/></svg>'
+  const contrastLabel = document.createElement('span')
+  contrastLabel.innerHTML = '<svg viewBox="0 0 24 24" fill="none" style="width:18px;height:18px;vertical-align:middle;margin-right:4px"><circle cx="12" cy="12" r="8" stroke="#111" stroke-width="2"/><path d="M12 4v16" stroke="#111" stroke-width="2"/></svg> Contrast'
+  const contrastSlider = document.createElement('input')
+  contrastSlider.type = 'range'
+  contrastSlider.min = '0.5'
+  contrastSlider.max = '2.0'
+  contrastSlider.step = '0.1'
+  contrastSlider.value = '1.0'
+  contrastSlider.className = 'slider'
+  const brightnessLabel = document.createElement('span')
+  brightnessLabel.innerHTML = '<svg viewBox="0 0 24 24" fill="none" style="width:18px;height:18px;vertical-align:middle;margin-right:4px"><circle cx="12" cy="12" r="3" stroke="#111" stroke-width="2"/><path d="M12 2v3M12 19v3M4.22 4.22l2.12 2.12M17.66 17.66l2.12 2.12M2 12h3M19 12h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12" stroke="#111" stroke-width="2"/></svg> Brightness'
+  const brightnessSlider = document.createElement('input')
+  brightnessSlider.type = 'range'
+  brightnessSlider.min = '-0.5'
+  brightnessSlider.max = '0.5'
+  brightnessSlider.step = '0.1'
+  brightnessSlider.value = '0.0'
+  brightnessSlider.className = 'slider'
+  const sharpenBtn = document.createElement('button')
+  sharpenBtn.className = 'icon-btn'
+  sharpenBtn.title = 'Sharpen'
+  sharpenBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 3l2.5 5H19l-4 3 1.5 5-4.5-3-4.5 3L9 11 5 8h4.5L12 3Z" stroke="#111" stroke-width="2"/></svg>'
+  const resetBtn = document.createElement('button')
+  resetBtn.className = 'icon-btn'
+  resetBtn.title = 'Reset'
+  resetBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><path d="M4 4v6h6" stroke="#111" stroke-width="2"/><path d="M20 20a8 8 0 1 0-8-8" stroke="#111" stroke-width="2"/></svg>'
+
+  controls.appendChild(zoomOutBtn)
+  controls.appendChild(zoomInBtn)
+  controls.appendChild(rotLeftBtn)
+  controls.appendChild(rotRightBtn)
+  controls.appendChild(contrastLabel)
+  controls.appendChild(contrastSlider)
+  controls.appendChild(brightnessLabel)
+  controls.appendChild(brightnessSlider)
+  controls.appendChild(sharpenBtn)
+  controls.appendChild(resetBtn)
+
+  const ocrWrap = document.createElement('div')
+  const ocrBtn = document.createElement('button')
+  ocrBtn.className = 'primary'
+  ocrBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" style="width:18px;height:18px;vertical-align:middle;margin-right:6px"><rect x="3" y="7" width="18" height="12" rx="3" stroke="#fff" stroke-width="2"/><circle cx="12" cy="13" r="3" stroke="#fff" stroke-width="2"/></svg> Run OCR'
+  const ocrStatus = document.createElement('div')
+  ocrStatus.className = 'ocr-status'
+  ocrWrap.appendChild(ocrBtn)
+  ocrWrap.appendChild(ocrStatus)
+
+  let formFields = []
+
+  const state = { zoom: 1, rotateDeg: 0, brightness: 0, contrast: 1, curIndex: 0, sharpen: false }
+  let viewerItems = []
+  function buildViewerItems(){
+    const items = []
+    const mainPages = Array.isArray(claim.pdf_pages) && claim.pdf_pages.length ? claim.pdf_pages.slice() : (claim.image_data ? [claim.image_data] : [])
+    mainPages.forEach(function(u){ items.push({ kind: 'primary', url: u }) })
+    const supp = Array.isArray(claim.support_docs) ? claim.support_docs : []
+    supp.forEach(function(d){
+      if (Array.isArray(d.pdf_pages) && d.pdf_pages.length) { d.pdf_pages.forEach(function(p){ items.push({ kind: 'support', url: p, source: d }) }) }
+      else if (d.processed_url) { items.push({ kind: 'support', url: d.processed_url, source: d }) }
+      else if (d.original_url) { items.push({ kind: 'support', url: d.original_url, source: d }) }
+    })
+    viewerItems = items
+    if (state.curIndex >= viewerItems.length) state.curIndex = Math.max(0, viewerItems.length - 1)
   }
+  function setPosText(){ if (viewerItems.length > 1) { posText.textContent = (state.curIndex + 1) + ' of ' + viewerItems.length } else { posText.textContent = '' } }
+
+  function sharpenCanvas(src){
+    try {
+      if (!window.cv) return src
+      const mat = cv.imread(src)
+      const gb = new cv.Mat()
+      cv.GaussianBlur(mat, gb, new cv.Size(0,0), 1.0)
+      const sharp = new cv.Mat()
+      cv.addWeighted(mat, 1.5, gb, -0.5, 0, sharp)
+      const out = document.createElement('canvas')
+      out.width = sharp.cols; out.height = sharp.rows
+      cv.imshow(out, sharp)
+      mat.delete(); gb.delete(); sharp.delete()
+      return out
+    } catch { return src }
+  }
+
+  function renderView(){
+    const cur = viewerItems[state.curIndex]
+    const src = cur && cur.url
+    if (!src) return
+    const img = new Image()
+    img.onload = function(){
+      const bw = img.naturalWidth, bh = img.naturalHeight
+      const s = state.zoom
+      const rad = state.rotateDeg * Math.PI / 180
+      const cos = Math.cos(rad), sin = Math.sin(rad)
+      const rw = Math.abs(bw * s * cos) + Math.abs(bh * s * sin)
+      const rh = Math.abs(bw * s * sin) + Math.abs(bh * s * cos)
+      viewCanvas.width = Math.max(1, Math.round(rw))
+      viewCanvas.height = Math.max(1, Math.round(rh))
+      const tmp = document.createElement('canvas')
+      tmp.width = bw; tmp.height = bh
+      const tctx = tmp.getContext('2d')
+      tctx.filter = 'contrast(' + state.contrast + ') brightness(' + (1 + state.brightness) + ')'
+      tctx.drawImage(img, 0, 0)
+      let source = tmp
+      if (state.sharpen) source = sharpenCanvas(tmp)
+      viewCtx.save()
+      viewCtx.clearRect(0,0,viewCanvas.width, viewCanvas.height)
+      viewCtx.translate(viewCanvas.width/2, viewCanvas.height/2)
+      viewCtx.rotate(rad)
+      viewCtx.drawImage(source, -bw*s/2, -bh*s/2, bw*s, bh*s)
+      viewCtx.restore()
+      setPosText()
+      removeCurrentBtn.disabled = !(cur && cur.kind === 'support')
+    }
+    img.src = src
+  }
+
+  function updateLowConfidenceHighlight(low){
+    formFields.forEach(function(f){ if (low) { f.input.classList.add('low-confidence') } else { f.input.classList.remove('low-confidence') } })
+  }
+
+  zoomInBtn.addEventListener('click', function(){ state.zoom = Math.min(4, state.zoom + 0.1); renderView() })
+  zoomOutBtn.addEventListener('click', function(){ state.zoom = Math.max(0.2, state.zoom - 0.1); renderView() })
+  rotLeftBtn.addEventListener('click', function(){ state.rotateDeg = (state.rotateDeg - 90) % 360; renderView() })
+  rotRightBtn.addEventListener('click', function(){ state.rotateDeg = (state.rotateDeg + 90) % 360; renderView() })
+  contrastSlider.addEventListener('input', function(){ state.contrast = parseFloat(contrastSlider.value || '1'); renderView() })
+  brightnessSlider.addEventListener('input', function(){ state.brightness = parseFloat(brightnessSlider.value || '0'); renderView() })
+  sharpenBtn.addEventListener('click', function(){ state.sharpen = !state.sharpen; renderView() })
+  resetBtn.addEventListener('click', function(){ state.zoom = 1; state.rotateDeg = 0; state.brightness = 0; state.contrast = 1; contrastSlider.value = '1.0'; brightnessSlider.value = '0.0'; renderView() })
+  prevBtn.addEventListener('click', function(){ if (viewerItems.length > 1) { state.curIndex = (state.curIndex - 1 + viewerItems.length) % viewerItems.length; renderView() } })
+  nextBtn.addEventListener('click', function(){ if (viewerItems.length > 1) { state.curIndex = (state.curIndex + 1) % viewerItems.length; renderView() } })
+
+  const removeCurrentBtn = document.createElement('button')
+  removeCurrentBtn.className = 'icon-btn'
+  removeCurrentBtn.title = 'Remove Current'
+  removeCurrentBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="#111" stroke-width="2"/></svg>'
+  removeCurrentBtn.addEventListener('click', function(){
+    const cur = viewerItems[state.curIndex]
+    if (!cur || cur.kind !== 'support') return
+    const docs = Array.isArray(claim.support_docs) ? claim.support_docs : []
+    let changed = false
+    for (let i=0; i<docs.length; i++) {
+      const d = docs[i]
+      if (Array.isArray(d.pdf_pages) && d.pdf_pages.indexOf(cur.url) !== -1) { docs.splice(i,1); changed = true; break }
+      if (d.processed_url === cur.url || d.original_url === cur.url) { docs.splice(i,1); changed = true; break }
+    }
+    if (changed) {
+      const ok = window.confirm('Remove this supporting document?')
+      if (!ok) return
+      claim.support_docs = docs
+      const claims = loadClaims()
+      const key = claimKey(claim)
+      const i = claims.findIndex(function(c){ return claimKey(c) === key })
+      if (i !== -1) { claims[i] = claim } else { claims.push(claim) }
+      saveClaims(claims)
+      buildViewerItems()
+      renderView()
+    }
+  })
+  buildViewerItems()
+  navControls.appendChild(prevBtn)
+  navControls.appendChild(posText)
+  navControls.appendChild(nextBtn)
+  navControls.appendChild(removeCurrentBtn)
+  content.appendChild(navControls)
   content.appendChild(imgWrap)
+  content.appendChild(controls)
+  content.appendChild(ocrWrap)
+  
+  const supportingSection = document.createElement('div')
+  supportingSection.className = 'supporting-section'
+  const suppHeader = document.createElement('div')
+  suppHeader.className = 'supporting-header'
+  const suppTitle = document.createElement('div')
+  suppTitle.textContent = 'Supporting Documents'
+  const suppActions = document.createElement('div')
+  suppActions.className = 'supporting-actions'
+  const uploadSuppBtn = document.createElement('button')
+  uploadSuppBtn.className = 'icon-btn'
+  uploadSuppBtn.title = 'Upload Supporting Doc'
+  uploadSuppBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><path d="M12 3v10" stroke="#111" stroke-width="2"/><path d="M8 7l4-4 4 4" stroke="#111" stroke-width="2"/><path d="M4 14v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4" stroke="#111" stroke-width="2"/></svg>'
+  const captureSuppBtn = document.createElement('button')
+  captureSuppBtn.className = 'icon-btn'
+  captureSuppBtn.title = 'Capture Supporting Doc'
+  captureSuppBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><rect x="3" y="7" width="18" height="12" rx="3" stroke="#111" stroke-width="2"/><path d="M9 7l1.5-2h3L15 7" stroke="#111" stroke-width="2"/><circle cx="12" cy="13" r="3" stroke="#111" stroke-width="2"/></svg>'
+  const uploadInput = document.createElement('input')
+  uploadInput.type = 'file'
+  uploadInput.accept = 'image/*,application/pdf'
+  uploadInput.multiple = true
+  uploadInput.style.display = 'none'
+  const captureInput = document.createElement('input')
+  captureInput.type = 'file'
+  captureInput.accept = 'image/*'
+  captureInput.setAttribute('capture','environment')
+  captureInput.style.display = 'none'
+  navControls.appendChild(uploadSuppBtn)
+  navControls.appendChild(captureSuppBtn)
+  suppHeader.appendChild(suppTitle)
+  suppHeader.appendChild(suppActions)
+  // moved inputs to nav controls
+  navControls.appendChild(uploadInput)
+  navControls.appendChild(captureInput)
+  const suppList = document.createElement('div')
+  suppList.className = 'supporting-list'
+  // removed thumbnail list and section
+
+  function renderSupporting(){
+    suppList.innerHTML = ''
+    const docs = Array.isArray(claim.support_docs) ? claim.support_docs : []
+    docs.forEach(function(d, idx){
+      const item = document.createElement('div')
+      item.className = 'supporting-item'
+      const img = document.createElement('img')
+      img.src = d.processed_url || d.original_url
+      const del = document.createElement('button')
+      del.className = 'support-remove'
+      del.title = 'Remove'
+      del.innerHTML = '<svg viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="#111" stroke-width="2"/></svg>'
+      del.addEventListener('click', function(){
+        const ok = window.confirm('Remove this supporting document?')
+        if (!ok) return
+        const arr = Array.isArray(claim.support_docs) ? claim.support_docs : []
+        arr.splice(idx,1)
+        claim.support_docs = arr
+        const claims = loadClaims()
+        const key = claimKey(claim)
+        const i = claims.findIndex(function(c){ return claimKey(c) === key })
+        if (i !== -1) { claims[i] = claim } else { claims.push(claim) }
+        saveClaims(claims)
+        renderSupporting()
+      })
+      item.appendChild(img)
+      item.appendChild(del)
+      suppList.appendChild(item)
+    })
+  }
+
+  function appendSupportToUrls(){
+    buildViewerItems()
+  }
+
+  function processSupportingFiles(files){
+    const arr = Array.from(files || [])
+    if (!arr.length) return
+    function addSupportDocEntry(entry){
+      const docs = Array.isArray(claim.support_docs) ? claim.support_docs : []
+      docs.push(entry)
+      claim.support_docs = docs
+      const claims = loadClaims()
+      const key = claimKey(claim)
+      const i = claims.findIndex(function(c){ return claimKey(c) === key })
+      if (i !== -1) { claims[i] = claim } else { claims.push(claim) }
+      saveClaims(claims)
+      appendSupportToUrls(); renderView(); setPosText()
+    }
+    function processImageFile(file){
+      loadOpenCV(function(){
+        const img = document.createElement('img')
+        img.src = URL.createObjectURL(file)
+        img.onload = function(){
+          const canvas = document.createElement('canvas')
+          canvas.width = img.naturalWidth; canvas.height = img.naturalHeight
+          const ctx = canvas.getContext('2d')
+          ctx.drawImage(img, 0, 0)
+          let processed
+          try {
+            const target = computeTargetSizeAndCorners(img)
+            processed = target ? scanner.extractPaper(img, target.resultWidth, target.resultHeight, target.cornerPoints) : canvas
+          } catch { processed = canvas }
+          const original_url = canvas.toDataURL('image/jpeg', 0.85)
+          const processed_url = processed.toDataURL('image/jpeg', 0.85)
+          addSupportDocEntry({ original_url, processed_url })
+        }
+      })
+    }
+    function processPdfSupport(file){
+      loadPDFJS(async function(){
+        const arrayBuf = await file.arrayBuffer()
+        const pdf = await window.pdfjsLib.getDocument({ data: arrayBuf }).promise
+        const pages = []
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i)
+          const viewport = page.getViewport({ scale: 1.6 })
+          const canvas = document.createElement('canvas')
+          const ctx = canvas.getContext('2d')
+          canvas.width = Math.floor(viewport.width)
+          canvas.height = Math.floor(viewport.height)
+          await page.render({ canvasContext: ctx, viewport }).promise
+          let processed = canvas
+          try {
+            const target = computeTargetSizeAndCorners(canvas)
+            processed = target ? scanner.extractPaper(canvas, target.resultWidth, target.resultHeight, target.cornerPoints) : canvas
+          } catch { processed = canvas }
+          pages.push(processed.toDataURL('image/jpeg', 0.85))
+        }
+        addSupportDocEntry({ pdf_pages: pages })
+      })
+    }
+    arr.forEach(function(file){
+      const isPdf = (/\.pdf$/i.test(file.name || '') || (file.type || '').toLowerCase() === 'application/pdf')
+      if (isPdf) processPdfSupport(file)
+      else processImageFile(file)
+    })
+  }
+
+  uploadSuppBtn.addEventListener('click', function(){ uploadInput.click() })
+  captureSuppBtn.addEventListener('click', function(){ captureInput.click() })
+  uploadInput.addEventListener('change', function(e){ processSupportingFiles(e.target.files) })
+  captureInput.addEventListener('change', function(e){ processSupportingFiles(e.target.files) })
+  appendSupportToUrls(); setPosText()
   editor.appendChild(content)
-  const formFields = []
+  renderView()
+  
+  ocrBtn.addEventListener('click', async function(){
+    ocrStatus.textContent = 'OCR: Processing…'
+    updateLowConfidenceHighlight(false)
+    try {
+      await new Promise(function(res){ loadOpenCV(res) })
+      await new Promise(function(res){ loadTesseract(res) })
+      let inputCanvas = viewCanvas
+      if (state.sharpen) inputCanvas = sharpenCanvas(viewCanvas)
+      const ocrCanvas = enhanceCanvasForOCR(inputCanvas)
+      const ocr = await window.Tesseract.recognize(ocrCanvas, 'eng')
+      const text = ocr.data.text
+      const conf = ocr.data && typeof ocr.data.confidence === 'number' ? ocr.data.confidence : 0
+      const { endpoint, model, apiKey } = getLLMConfig()
+      if (!endpoint || !model || !apiKey) { ocrStatus.textContent = 'OCR: Error (LLM settings missing)'; showAlert('LLM settings missing. Set endpoint, model, and API key.'); return }
+      const json = await callLLM(endpoint, model, apiKey, text)
+      if (json) {
+        const normalized = normalizeParsedFields(json)
+        formFields.forEach(function(f){ f.input.value = normalized[f.key] == null ? '' : String(normalized[f.key]) })
+        ocrStatus.textContent = 'OCR: Success'
+        updateLowConfidenceHighlight(conf < 65)
+      } else {
+        ocrStatus.textContent = 'OCR: Error (LLM parsing failed)'
+        showAlert('LLM parsing failed. Check model and endpoint settings.')
+      }
+    } catch (e) {
+      ocrStatus.textContent = 'OCR: Error'
+      showAlert('OCR error: ' + (e && e.message ? e.message : String(e)))
+    }
+  })
+
   scanColumns.forEach(function(key){
     const f = document.createElement('div')
     f.className = 'field'
@@ -807,9 +1235,9 @@ function openClaimEditor(claim){
   actions.className = 'actions'
   const saveBtn = document.createElement('button')
   saveBtn.className = 'primary'
-  saveBtn.textContent = 'Save'
+  saveBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" style="width:18px;height:18px;vertical-align:middle;margin-right:6px"><path d="M5 4h12l2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z" stroke="#fff" stroke-width="2"/><path d="M7 8h10" stroke="#fff" stroke-width="2"/></svg> Save'
   const cancelBtn = document.createElement('button')
-  cancelBtn.textContent = 'Close'
+  cancelBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" style="width:18px;height:18px;vertical-align:middle;margin-right:6px"><path d="M6 6l12 12M18 6L6 18" stroke="#111" stroke-width="2"/></svg> Close'
   actions.appendChild(saveBtn); actions.appendChild(cancelBtn)
   content.appendChild(actions)
   saveBtn.addEventListener('click', function(){
@@ -831,6 +1259,8 @@ function openClaimEditor(claim){
     renderClaimsList()
     editor.style.display = 'none'
   })
+
+  // Export PDF removed from claims editor
 }
 
 // initial list render on load
