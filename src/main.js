@@ -1012,11 +1012,16 @@ function openClaimEditor(claim){
     let changed = false
     for (let i=0; i<docs.length; i++) {
       const d = docs[i]
-      if (Array.isArray(d.pdf_pages) && d.pdf_pages.indexOf(cur.url) !== -1) { docs.splice(i,1); changed = true; break }
+      if (Array.isArray(d.pdf_pages) && d.pdf_pages.indexOf(cur.url) !== -1) {
+        const idx = d.pdf_pages.indexOf(cur.url)
+        d.pdf_pages.splice(idx, 1)
+        if (d.pdf_pages.length === 0) { docs.splice(i,1) }
+        changed = true; break
+      }
       if (d.processed_url === cur.url || d.original_url === cur.url) { docs.splice(i,1); changed = true; break }
     }
     if (changed) {
-      const ok = window.confirm('Remove this supporting document?')
+      const ok = window.confirm('Remove this page from supporting document?')
       if (!ok) return
       claim.support_docs = docs
       const claims = loadClaims()
